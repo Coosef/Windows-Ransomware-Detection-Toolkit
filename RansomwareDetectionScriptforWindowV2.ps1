@@ -2,7 +2,7 @@
 # WARNING: This is a basic script. For comprehensive protection, use a professional antivirus solution.
 Set-ExecutionPolicy RemoteSigned
 # Define suspicious file extensions commonly used by ransomware
-$suspiciousExtensions = ".cry", ".crypto", ".darkness", "*enc*", "*.exx", "*.kb15", "*.kraken", "*.locked", "*.nochance", 
+$suspiciousExtensions = ".cry", ".crypto", ".darkness", "*enc*", "*.exx", "*.datawar", ".datawar", "*.kb15", "*.kraken", "*.locked", "*.nochance", 
                         ".0x0", ".02", ".725", ".1999", ".1cbu1", ".1txt", ".2ed2", ".73i87A", ".726", ".777", ".7h9r", 
                         ".7z.encrypted", ".7zipper", ".8c7f", ".8lock8", ".911", ".a19", ".a5zfn", ".aaa", ".abc", ".adk",
                         ".adr", ".AES", ".AES256", ".aes_ni", ".aes_ni_gov", ".aes_ni_0day", ".AESIR", ".AFD", ".aga", 
@@ -101,5 +101,6 @@ function Search-ForSuspiciousFiles {
 
 # Execute the search
 Search-ForSuspiciousFiles -path $driveToScan -extensions $suspiciousExtensions -noteNames $ransomNoteNames
+
 
 Write-Host "Scan complete. Review the log at $logFile for findings. Please take further action if any suspicious files or notes are found."
