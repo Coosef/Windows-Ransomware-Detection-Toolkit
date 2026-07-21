@@ -43,7 +43,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Menu','Quick','Full','Custom','Watch','Update','Baseline','Diff')]
+    [ValidateSet('Menu','Quick','Full','Custom','Watch','Update','Baseline','Diff','Fleet')]
     [string]$Mode = 'Menu',
     [string[]]$Path,
 
@@ -484,6 +484,25 @@ $script:ExecutableExts = New-Object 'System.Collections.Generic.HashSet[string]'
 foreach ($e in @('.exe','.dll','.scr','.com','.pif','.cpl','.sys','.msi','.jar','.js','.jse','.vbs','.vbe',
                  '.wsf','.ps1','.bat','.cmd','.hta','.lnk','.elf','.bin')) { [void]$script:ExecutableExts.Add($e) }
 
+function Import-Allowlist {
+    # Exclusions (like AV exclusions) from data/allowlist.txt: a path prefix,
+    # an extension (.ext) or a name wildcard - one per line.
+    param([string]$Dir)
+    $prefixes = New-Object System.Collections.ArrayList
+    $exts = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $names = New-Object System.Collections.ArrayList
+    $p = Join-Path $Dir 'allowlist.txt'
+    if (Test-Path $p) {
+        foreach ($raw in Get-Content -LiteralPath $p) {
+            $t = $raw.Trim(); if (-not $t -or $t.StartsWith('#')) { continue }
+            if ($t.StartsWith('/') -or $t -match '^[a-zA-Z]:[\\/]') { [void]$prefixes.Add($t.ToLower().Replace('\', '/')) }
+            elseif ($t.StartsWith('.')) { [void]$exts.Add($t.ToLower()) }
+            else { [void]$names.Add((Convert-WildcardToRegex $t)) }
+        }
+    }
+    return [pscustomobject]@{ Prefixes = @($prefixes); Exts = $exts; Names = @($names) }
+}
+
 function Get-YaraRules {
     param([string]$Dir)
     if (-not (Get-Command yara -ErrorAction SilentlyContinue)) { return @() }
@@ -607,6 +626,9 @@ function Invoke-Scan {
     if ($script:MalHashes.Count) { Write-Info ("Hash IOC      : {0} known-malicious hashes loaded" -f $script:MalHashes.Count) }
     $yaraRules = Get-YaraRules -Dir $DataDir           # optional YARA rules
     if ($yaraRules.Count) { Write-Info ("YARA          : {0} rule file(s) loaded" -f $yaraRules.Count) }
+    $script:Allow = Import-Allowlist -Dir $DataDir     # optional exclusions
+    $allowN = $script:Allow.Prefixes.Count + $script:Allow.Exts.Count + $script:Allow.Names.Count
+    if ($allowN) { Write-Info ("Allowlist     : {0} exclusion rule(s) loaded" -f $allowN) }
     Write-Info ("Targets       : {0}" -f ($Targets -join ' ; '))
     Write-Host ""
 
@@ -644,6 +666,20 @@ function Invoke-Scan {
                 $ext    = $file.Extension
                 $dir    = $file.DirectoryName
                 $extLow = $ext.ToLowerInvariant()
+
+                # allowlist (exclusions): skip matched files entirely
+                if ($script:Allow) {
+                    $skipIt = $false
+                    if ($script:Allow.Exts.Contains($extLow)) { $skipIt = $true }
+                    elseif ($script:Allow.Prefixes.Count) {
+                        $pl = $file.FullName.ToLower().Replace('\', '/')
+                        foreach ($pre in $script:Allow.Prefixes) { if ($pl.StartsWith($pre)) { $skipIt = $true; break } }
+                    }
+                    if (-not $skipIt -and $script:Allow.Names.Count) {
+                        foreach ($rx in $script:Allow.Names) { if ($name -match $rx) { $skipIt = $true; break } }
+                    }
+                    if ($skipIt) { return }
+                }
 
                 $now = Get-Date
                 if (($now - $script:lastTick).TotalMilliseconds -ge 400) {
@@ -1297,6 +1333,96 @@ function Invoke-Diff {
 }
 
 # ===========================================================================
+# Fleet dashboard  (combine many devices' JSON reports into one view)
+# ===========================================================================
+function Invoke-Fleet {
+    param([string]$Folder)
+    if (-not $Folder) { $Folder = $OutputDir }
+    Write-Host ""
+    Write-Host "  Fleet dashboard - combine many devices' reports into one view" -ForegroundColor Cyan
+    Write-Info "Source folder : $Folder"
+    $files = @(Get-ChildItem -LiteralPath $Folder -Filter '*RansomwareScan_*.json' -ErrorAction SilentlyContinue)
+    $devices = @{}
+    foreach ($f in $files) {
+        try { $m = (Get-Content -LiteralPath $f.FullName -Raw | ConvertFrom-Json).meta } catch { continue }
+        if (-not $m) { continue }
+        $inv = $m.inventory
+        $hn = if ($m.computer) { $m.computer } elseif ($inv -and $inv.hostname) { $inv.hostname } else { $f.BaseName }
+        $started = [string]$m.startedAt
+        if ($devices.ContainsKey($hn) -and $started -le $devices[$hn].started) { continue }
+        $fam = @(); if ($m.likelyFamilies) { $fam = @($m.likelyFamilies | ForEach-Object { $_.name }) }
+        $devices[$hn] = [pscustomobject]@{
+            host = $hn; started = $started; verdict = [string]$m.verdict
+            high = [int]$m.counts.high; medium = [int]$m.counts.medium; low = [int]$m.counts.low
+            mode = [string]$m.scanMode; files = [string]$m.filesScanned
+            os = $(if ($inv.os) { $inv.os } else { $inv.platform }); model = [string]$inv.model; user = [string]$m.user
+            ips = (@($inv.ips | Select-Object -First 2) -join ', '); families = ($fam -join ', ')
+        }
+    }
+    $rows = @($devices.Values | Sort-Object @{Expression = 'high'; Descending = $true}, @{Expression = 'medium'; Descending = $true})
+    $infected = @($rows | Where-Object { $_.high -gt 0 }).Count
+    $suspicious = @($rows | Where-Object { $_.high -eq 0 -and $_.medium -gt 0 }).Count
+    $clean = $rows.Count - $infected - $suspicious
+    Write-Info ("Devices: {0}   infected: {1}   suspicious: {2}   clean: {3}" -f $rows.Count, $infected, $suspicious, $clean)
+    if (-not $rows.Count) { Write-Warn2 "No scan reports found. Collect the devices' reports/*.json into one folder first."; return 0 }
+
+    if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null }
+    $stamp = (Get-Date).ToString('yyyyMMdd_HHmmss')
+    $base = Join-Path $OutputDir "FleetDashboard_$stamp"
+
+    # CSV
+    $csv = New-Object System.Text.StringBuilder
+    [void]$csv.AppendLine('device,verdict,high,medium,low,families,os,model,user,ip,scan_mode,files,last_scan')
+    foreach ($d in $rows) {
+        $vals = @($d.host, $d.verdict, $d.high, $d.medium, $d.low, $d.families, $d.os, $d.model, $d.user, $d.ips, $d.mode, $d.files, $d.started)
+        [void]$csv.AppendLine((($vals | ForEach-Object { '"' + ([string]$_ -replace '"', "'") + '"' }) -join ','))
+    }
+    Set-Content -LiteralPath "$base.csv" -Value $csv.ToString() -Encoding UTF8
+
+    # HTML
+    $tr = New-Object System.Text.StringBuilder
+    foreach ($d in $rows) {
+        $cls = if ($d.high) { 'high' } elseif ($d.medium) { 'medium' } else { 'clean' }
+        $badge = switch ($cls) { 'high' { "<span class='badge high'>INFECTED</span>" } 'medium' { "<span class='badge medium'>SUSPICIOUS</span>" } default { "<span class='badge low'>clean</span>" } }
+        [void]$tr.AppendLine(("<tr class='$cls'><td><b>{0}</b></td><td>{1}</td><td style='color:#ff6b81'>{2}</td><td style='color:#ffcf6b'>{3}</td><td>{4}</td><td>{5}</td><td>{6}</td><td>{7}</td><td class='path'>{8}</td><td>{9}</td><td>{10}</td></tr>" -f `
+            (HtmlEncode $d.host), $badge, $d.high, $d.medium, $d.low, (HtmlEncode $d.families), (HtmlEncode (($d.os + ' ' + $d.model).Trim())), (HtmlEncode $d.user), (HtmlEncode $d.ips), (HtmlEncode $d.files), (HtmlEncode $d.started)))
+    }
+    $html = @"
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Fleet dashboard - $stamp</title>
+<style>
+ :root{--bg:#0f1420;--card:#171d2b;--tx:#e6e9ef;--mut:#8b93a7;--line:#26304a}
+ body{margin:0;font-family:Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--tx)}
+ .wrap{max-width:1200px;margin:0 auto;padding:28px}h1{font-size:20px;margin:0 0 4px}.sub{color:var(--mut);font-size:13px;margin-bottom:16px}
+ .cards{display:flex;gap:14px;flex-wrap:wrap;margin:16px 0}.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 18px;min-width:120px}
+ .card .n{font-size:26px;font-weight:700}.card .l{color:var(--mut);font-size:12px;text-transform:uppercase;letter-spacing:.5px}
+ table{width:100%;border-collapse:collapse;background:var(--card);border-radius:12px;overflow:hidden;font-size:13px}
+ th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line)}th{background:#1d2434;color:var(--mut)}
+ td.path{font-family:Consolas,monospace;color:#bcd0ff}.badge{padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700}
+ .badge.high{background:#5a1e2e;color:#ff8ea0}.badge.medium{background:#5a4a1e;color:#ffdf9b}.badge.low{background:#2a3350;color:#9fb2df}
+ tr.high td{background:rgba(90,30,46,.12)}.foot{color:var(--mut);font-size:12px;margin-top:20px}
+</style></head><body><div class="wrap">
+ <h1>Ransomware Fleet Dashboard</h1><div class="sub">$($rows.Count) device(s) &middot; generated $((Get-Date).ToString('yyyy-MM-dd HH:mm'))</div>
+ <div class="cards">
+   <div class="card"><div class="n" style="color:#ff6b81">$infected</div><div class="l">Infected</div></div>
+   <div class="card"><div class="n" style="color:#ffcf6b">$suspicious</div><div class="l">Suspicious</div></div>
+   <div class="card"><div class="n" style="color:#5ee08a">$clean</div><div class="l">Clean</div></div>
+   <div class="card"><div class="n">$($rows.Count)</div><div class="l">Devices</div></div>
+ </div>
+ <table><thead><tr><th>Device</th><th>Status</th><th>High</th><th>Med</th><th>Low</th><th>Likely family</th><th>OS / model</th><th>User</th><th>IP</th><th>Files</th><th>Last scan</th></tr></thead>
+ <tbody>
+$($tr.ToString())
+ </tbody></table>
+ <div class="foot">Latest report per device. Collect each machine's reports\*.json into one folder and run: -Mode Fleet -Path &lt;folder&gt;.</div>
+</div></body></html>
+"@
+    Set-Content -LiteralPath "$base.html" -Value $html -Encoding UTF8
+    Write-Ok "Dashboard: $base.html"
+    Write-Ok "CSV:       $base.csv"
+    if ($OpenReport) { try { Invoke-Item -LiteralPath "$base.html" } catch { } }
+    return $(if ($infected) { 2 } elseif ($suspicious) { 1 } else { 0 })
+}
+
+# ===========================================================================
 # Interactive menu
 # ===========================================================================
 function Show-Menu {
@@ -1316,6 +1442,7 @@ function Show-Menu {
         Write-Host "   [7]  Identify online       open ID Ransomware / No More Ransom"
         Write-Host "   [8]  Baseline snapshot     record a folder's state to compare later"
         Write-Host "   [9]  Diff vs baseline      show what changed since the snapshot"
+        Write-Host "   [F]  Fleet dashboard       combine many devices' reports into one view"
         Write-Host "   [0]  Exit"
         Write-Host ""
         $choice = Read-Host "   Select an option"
@@ -1339,6 +1466,11 @@ function Show-Menu {
             '9' {
                 $t = Read-Host "   Folder to diff (blank = user folders)"
                 [void](Invoke-Diff -Targets ($(if ($t) { Resolve-Targets -Path @($t) } else { Resolve-Targets })))
+                [void](Read-Host "`n   Press Enter to return to the menu")
+            }
+            { $_ -eq 'F' -or $_ -eq 'f' } {
+                $t = Read-Host "   Reports folder (blank = this tool's reports)"
+                [void](Invoke-Fleet -Folder ($(if ($t) { $t } else { $null })))
                 [void](Read-Host "`n   Press Enter to return to the menu")
             }
             '0' { return }
@@ -1378,4 +1510,5 @@ switch ($Mode) {
     'Update' { Invoke-Update }
     'Baseline' { exit (Invoke-Baseline -Targets ($(if ($Path) { Resolve-Targets -Path $Path } else { Resolve-Targets }))) }
     'Diff'     { exit (Invoke-Diff     -Targets ($(if ($Path) { Resolve-Targets -Path $Path } else { Resolve-Targets }))) }
+    'Fleet'    { exit (Invoke-Fleet -Folder ($(if ($Path) { $Path[0] } else { $null }))) }
 }

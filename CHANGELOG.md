@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.7 — Fleet dashboard & allowlist
+
+- **Fleet dashboard** (`--mode fleet` / menu `F`) — point it at a folder of many
+  devices' JSON scan reports and it builds ONE HTML dashboard + CSV: every machine
+  with its verdict, high/medium/low counts, likely family, OS/model, user, IP and
+  last-scan time, sorted worst-first. Keeps the latest report per device. Ideal for
+  reviewing 50-60 machines at a glance.
+- **Allowlist / exclusions** (`data/allowlist.txt`) — skip files by path prefix,
+  extension or name wildcard (like AV exclusions), to silence a legitimate app in
+  your environment that trips a finding.
+
 ## 3.6 — Alerts, containment & background service (group B)
 
 Make the live monitor useful when nobody is watching the screen.

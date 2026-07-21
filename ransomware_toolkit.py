@@ -154,6 +154,35 @@ def load_ioc(data_dir):
     return {"exact": ext_exact, "auto": ext_auto, "wild": ext_wild,
             "notes": note_re, "keywords": keywords}
 
+def load_allowlist(data_dir):
+    """Exclusions (like AV exclusions), from data/allowlist.txt. Each line is a
+    path prefix (/... or X:\\...), an extension (.ext) or a name wildcard."""
+    prefixes, exts, names = [], set(), []
+    p = os.path.join(data_dir, "allowlist.txt")
+    if os.path.isfile(p):
+        for line in _read_lines(p):
+            t = line.strip()
+            if not t or t.startswith("#"):
+                continue
+            if t.startswith("/") or re.match(r"^[a-zA-Z]:[\\/]", t):
+                prefixes.append(t.lower().replace("\\", "/"))
+            elif t.startswith("."):
+                exts.add(t.lower())
+            else:
+                names.append(re.compile(fnmatch.translate(t), re.IGNORECASE))
+    return {"prefixes": prefixes, "exts": exts, "names": names}
+
+def is_allowlisted(allow, path, name, ext_low):
+    if allow["exts"] and ext_low in allow["exts"]:
+        return True
+    if allow["prefixes"]:
+        pl = path.lower().replace("\\", "/")
+        if any(pl.startswith(pre) for pre in allow["prefixes"]):
+            return True
+    if allow["names"] and any(rx.match(name) for rx in allow["names"]):
+        return True
+    return False
+
 def load_families(data_dir):
     path = os.path.join(data_dir, "families.json")
     res = {"by_ext": {}, "by_note": {}, "families": [], "urls": IDENTIFY_URLS_DEFAULT}
@@ -462,10 +491,14 @@ def run_scan(cfg, targets, mode_label):
 
     malhashes = load_hashset(cfg["data_dir"])      # optional known-malware hash IOC
     yara_rules = find_yara_rules(cfg["data_dir"])  # optional YARA rules
+    allow = load_allowlist(cfg["data_dir"])        # optional exclusions
     if malhashes:
         info(f"Hash IOC      : {len(malhashes):,} known-malicious hashes loaded")
     if yara_rules:
         info(f"YARA          : {len(yara_rules)} rule file(s) loaded")
+    _nallow = len(allow["prefixes"]) + len(allow["exts"]) + len(allow["names"])
+    if _nallow:
+        info(f"Allowlist     : {_nallow} exclusion rule(s) loaded")
 
     for target in targets:
         info(f"Scanning: {target}")
@@ -487,6 +520,9 @@ def run_scan(cfg, targets, mode_label):
             ext = os.path.splitext(name)[1]
             ext_low = ext.lower()
             d = os.path.dirname(path)
+
+            if _nallow and is_allowlisted(allow, path, name, ext_low):
+                continue
 
             now = time.time()
             if now - last_tick >= 0.5 and _TTY:
@@ -775,6 +811,93 @@ def run_diff(cfg, targets):
                           0, findings, high, [], [], verdict, fam, system_inventory())
     ok(f"Report: {paths['html']}")
     return 2 if high else 0
+
+def run_fleet(cfg, folder=None):
+    """Aggregate every device's JSON scan report in <folder> (default: reports/)
+    into ONE dashboard + CSV, so 50-60 machines can be reviewed at a glance."""
+    import glob
+    src = folder or cfg["output_dir"]
+    files = sorted(set(glob.glob(os.path.join(src, "*RansomwareScan_*.json"))))
+    print()
+    print(_c("36", "  Fleet dashboard  -  combine many devices' reports into one view"))
+    info(f"Source folder : {src}")
+    devices = {}
+    for fp in files:
+        try:
+            with open(fp, encoding="utf-8") as f:
+                m = json.load(f).get("meta", {})
+        except Exception:
+            continue
+        inv = m.get("inventory") or {}
+        host = m.get("computer") or inv.get("hostname") or os.path.basename(fp)
+        started = m.get("startedAt", "")
+        if host in devices and started <= devices[host]["started"]:
+            continue
+        counts = m.get("counts") or {}
+        devices[host] = {
+            "host": host, "started": started, "verdict": m.get("verdict", "?"),
+            "high": counts.get("high", 0), "medium": counts.get("medium", 0), "low": counts.get("low", 0),
+            "mode": m.get("scanMode", ""), "files": m.get("filesScanned", 0),
+            "os": inv.get("os", "") or inv.get("platform", ""), "model": inv.get("model", ""),
+            "user": m.get("user", "") or inv.get("user", ""),
+            "ips": ", ".join((inv.get("ips") or [])[:2]),
+            "families": ", ".join(f.get("name", "") for f in (m.get("likelyFamilies") or [])),
+        }
+    rows = sorted(devices.values(), key=lambda d: (-int(d["high"] > 0), -int(d["medium"] > 0), -d["high"], -d["medium"]))
+    infected = sum(1 for d in rows if d["high"] > 0)
+    suspicious = sum(1 for d in rows if d["high"] == 0 and d["medium"] > 0)
+    clean = len(rows) - infected - suspicious
+    info(f"Devices: {len(rows)}   infected: {infected}   suspicious: {suspicious}   clean: {clean}")
+    if not rows:
+        warn("No scan reports found. Collect the devices' reports/*.json into one folder first.")
+        return 0
+
+    os.makedirs(cfg["output_dir"], exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base = os.path.join(cfg["output_dir"], f"FleetDashboard_{stamp}")
+
+    # CSV
+    with open(base + ".csv", "w", encoding="utf-8") as cf:
+        cf.write("device,verdict,high,medium,low,families,os,model,user,ip,scan_mode,files,last_scan\n")
+        for d in rows:
+            vals = [d["host"], d["verdict"], d["high"], d["medium"], d["low"], d["families"],
+                    d["os"], d["model"], d["user"], d["ips"], d["mode"], d["files"], d["started"]]
+            cf.write(",".join('"' + str(v).replace('"', "'") + '"' for v in vals) + "\n")
+
+    # HTML
+    trows = []
+    for d in rows:
+        cls = "high" if d["high"] else ("medium" if d["medium"] else "clean")
+        badge = {"high": "<span class='badge high'>INFECTED</span>",
+                 "medium": "<span class='badge medium'>SUSPICIOUS</span>"}.get(cls, "<span class='badge low'>clean</span>")
+        trows.append(
+            f"<tr class='{cls}'><td><b>{html.escape(d['host'])}</b></td><td>{badge}</td>"
+            f"<td style='color:#ff6b81'>{d['high']}</td><td style='color:#ffcf6b'>{d['medium']}</td><td>{d['low']}</td>"
+            f"<td>{html.escape(d['families'])}</td><td>{html.escape((d['os'] + ' ' + d['model']).strip())}</td>"
+            f"<td>{html.escape(d['user'])}</td><td class='path'>{html.escape(d['ips'])}</td>"
+            f"<td>{html.escape(str(d['files']))}</td><td>{html.escape(d['started'])}</td></tr>")
+    doc = (HTML_HEAD.replace("__TITLE__", f"Fleet dashboard - {stamp}")
+           + "<h1>Ransomware Fleet Dashboard</h1>"
+           + f"<div class='sub'>{len(rows)} device(s) &middot; generated {datetime.now():%Y-%m-%d %H:%M}</div>"
+           + "<div class='cards'>"
+           + f"<div class='card'><div class='n' style='color:#ff6b81'>{infected}</div><div class='l'>Infected</div></div>"
+           + f"<div class='card'><div class='n' style='color:#ffcf6b'>{suspicious}</div><div class='l'>Suspicious</div></div>"
+           + f"<div class='card'><div class='n' style='color:#5ee08a'>{clean}</div><div class='l'>Clean</div></div>"
+           + f"<div class='card'><div class='n'>{len(rows)}</div><div class='l'>Devices</div></div></div>"
+           + "<table><thead><tr><th>Device</th><th>Status</th><th>High</th><th>Med</th><th>Low</th>"
+             "<th>Likely family</th><th>OS / model</th><th>User</th><th>IP</th><th>Files</th><th>Last scan</th></tr></thead><tbody>"
+           + "".join(trows)
+           + "</tbody></table>"
+           + "<div class='foot'>Latest report per device. Collect each machine's reports/*.json into one folder "
+             "and point this at it (--mode fleet --path &lt;folder&gt;).</div></div></body></html>")
+    with open(base + ".html", "w", encoding="utf-8") as hf:
+        hf.write(doc)
+    ok(f"Dashboard: {base}.html")
+    ok(f"CSV:       {base}.csv")
+    if cfg["open_report"]:
+        try: webbrowser.open("file://" + base + ".html")
+        except Exception: pass
+    return 2 if infected else (1 if suspicious else 0)
 
 def sha256_file(path, cap=64 * 1024 * 1024):
     import hashlib
@@ -1454,6 +1577,7 @@ def show_menu(cfg):
         print("   [7]  Identify online       open ID Ransomware / No More Ransom")
         print("   [8]  Baseline snapshot     record a folder's state to compare later")
         print("   [9]  Diff vs baseline      show what changed since the snapshot")
+        print("   [f]  Fleet dashboard       combine many devices' reports into one view")
         print("   [0]  Exit")
         print()
         try:
@@ -1486,6 +1610,9 @@ def show_menu(cfg):
             t = input("   Folder to diff (blank = user folders): ").strip()
             tg = resolve_targets("custom", [t]) if t else resolve_targets("quick", None)
             run_diff(cfg, tg); _pause()
+        elif choice.lower() == "f":
+            t = input("   Reports folder (blank = this tool's reports/): ").strip()
+            run_fleet(cfg, t or None); _pause()
         elif choice == "0":
             return
 
@@ -1527,7 +1654,7 @@ def build_cfg(a):
 
 def main():
     ap = argparse.ArgumentParser(description="Windows Ransomware Detection Toolkit - Linux/Python edition")
-    ap.add_argument("--mode", choices=["menu", "quick", "full", "custom", "watch", "update", "baseline", "diff"], default="menu")
+    ap.add_argument("--mode", choices=["menu", "quick", "full", "custom", "watch", "update", "baseline", "diff", "fleet"], default="menu")
     ap.add_argument("--path", nargs="+", help="paths to scan (custom) or watch")
     ap.add_argument("--recent-hours", type=int, default=24, dest="recent_hours")
     ap.add_argument("--mass-threshold", type=int, default=40, dest="mass_threshold")
@@ -1591,6 +1718,8 @@ def main():
         sys.exit(run_baseline(cfg, resolve_targets("custom", a.path) or resolve_targets("quick", None)))
     elif mode == "diff":
         sys.exit(run_diff(cfg, resolve_targets("custom", a.path) or resolve_targets("quick", None)))
+    elif mode == "fleet":
+        sys.exit(run_fleet(cfg, a.path[0] if a.path else None))
 
 if __name__ == "__main__":
     main()

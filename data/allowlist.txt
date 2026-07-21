@@ -1,0 +1,14 @@
+# Allowlist / exclusions - files matched here are skipped (like AV exclusions).
+# One entry per line. Lines starting with # are comments. Type is inferred:
+#
+#   a path prefix   ->  starts with /  or  a drive letter, e.g.  C:\MyApp\
+#   an extension    ->  starts with .  , e.g.  .myenc
+#   a name wildcard ->  anything else , e.g.  backup_*.dat  or  license.key
+#
+# Use this to silence a legitimate app in your environment that trips a finding.
+# Examples (uncomment and edit):
+#
+# C:\Program Files\SomeBackupTool\
+# /opt/mybackup/
+# .vaultdata
+# db_backup_*.enc

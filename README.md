@@ -122,6 +122,21 @@ başlatmada) yalnızca **kendi** tuzaklarını güvenle temizler — asla birikm
 > Bir şey ayarlamana **gerek yok** — kutudan çıktığı gibi çalışır. Config yalnızca
 > fleet genelinde ortak varsayılan istersen kullanılır.
 
+### 📊 Fleet panosu (çok cihaz özeti)
+Her cihazın `reports/*.json` raporlarını **tek bir klasörde toplayıp** panoyu üret:
+```
+python3 ransomware_toolkit.py --mode fleet --path /topladigin/raporlar
+# veya (PS)  -Mode Fleet -Path C:\ToplananRaporlar   ·  menüde 'F'
+```
+Sonuç: tek **HTML pano + CSV** — hangi makine enfekte/şüpheli/temiz, bulgu sayıları,
+muhtemel aile, OS/model, kullanıcı, IP, son tarama — kötüden iyiye sıralı. Cihaz
+başına en son rapor gösterilir.
+
+### 🚫 Allowlist (istisna listesi)
+`data/allowlist.txt` içine bir yol öneki, uzantı (`.ext`) veya isim deseni yazarsan
+o dosyalar taramada atlanır (AV istisnaları gibi) — ortamına özel meşru bir uygulamayı
+susturmak için.
+
 ## 🧩 Ek tespit katmanları
 
 - **Baseline / diff** (menü `8` / `9`): Bir klasörün anlık durumunu kaydet
