@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.12 — Redesigned menu
+
+- **New boxed, colour-coded interactive menu** grouped into SCAN / MONITOR &
+  COMPARE / FLEET & TOOLS, with the version in the header and a "powered by
+  Coosef" footer. Uses pure-ASCII box characters so it renders correctly in every
+  Windows console/code page as well as Linux/macOS terminals. Same design in both
+  engines.
+
 ## 3.11 — Windows defense-evasion detection
 
 - **Defense-evasion layer (Windows)** — a scan now also checks, machine-wide, for

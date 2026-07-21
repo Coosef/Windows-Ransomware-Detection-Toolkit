@@ -1568,24 +1568,35 @@ function Invoke-Selftest {
 # ===========================================================================
 function Show-Menu {
     while ($true) {
+        try { Clear-Host } catch { }
+        $mw = 62
+        function ML($t, $c = 'Gray') {
+            $s = [string]$t; if ($s.Length -gt $mw) { $s = $s.Substring(0, $mw) }
+            Write-Host "  |" -NoNewline -ForegroundColor DarkCyan
+            Write-Host ($s.PadRight($mw)) -NoNewline -ForegroundColor $c
+            Write-Host "|" -ForegroundColor DarkCyan
+        }
+        $eq = "  +" + ('=' * $mw) + "+"; $dash = "  +" + ('-' * $mw) + "+"
+        $title = "   RANSOMWARE  DETECTION  TOOLKIT"; $ver = "v3.12"
         Write-Host ""
-        Write-Host ('=' * 64) -ForegroundColor DarkCyan
-        Write-Host "   Windows Ransomware Detection Toolkit  (portable)" -ForegroundColor Cyan
-        Write-Host "   Read-only scan - reports saved to the 'reports' folder" -ForegroundColor DarkGray
-        Write-Host ('=' * 64) -ForegroundColor DarkCyan
-        Write-Host ""
-        Write-Host "   [1]  Quick scan     user folders (Desktop, Documents, ...)"
-        Write-Host "   [2]  Full scan      all internal drives (needs admin)"
-        Write-Host "   [3]  Live monitor   real-time early warning (canary + burst)"
-        Write-Host "   [4]  Custom path    scan a folder or drive you choose"
-        Write-Host "   [5]  Open reports folder"
-        Write-Host "   [6]  Update definitions   fetch latest extensions online"
-        Write-Host "   [7]  Identify online       open ID Ransomware / No More Ransom"
-        Write-Host "   [8]  Baseline snapshot     record a folder's state to compare later"
-        Write-Host "   [9]  Diff vs baseline      show what changed since the snapshot"
-        Write-Host "   [F]  Fleet dashboard       combine many devices' reports into one view"
-        Write-Host "   [T]  Self-test             verify detection works in this environment"
-        Write-Host "   [0]  Exit"
+        Write-Host $eq -ForegroundColor DarkCyan
+        ML ($title + (' ' * [Math]::Max(1, $mw - $title.Length - $ver.Length - 1)) + $ver) 'Cyan'
+        ML "   portable . read-only . Windows + Linux/macOS" 'DarkGray'
+        Write-Host $dash -ForegroundColor DarkCyan
+        ML ""
+        ML "    SCAN" 'Yellow'
+        ML "      [1] Quick scan      [2] Full scan       [4] Custom path" 'White'
+        ML ""
+        ML "    MONITOR  /  COMPARE" 'Yellow'
+        ML "      [3] Live monitor    [8] Baseline        [9] Diff" 'White'
+        ML ""
+        ML "    FLEET  /  TOOLS" 'Yellow'
+        ML "      [F] Fleet board     [6] Update          [7] Identify" 'White'
+        ML "      [5] Open reports    [T] Self-test       [0] Exit" 'White'
+        ML ""
+        Write-Host $dash -ForegroundColor DarkCyan
+        ML (("powered by Coosef  ").PadLeft($mw)) 'Magenta'
+        Write-Host $eq -ForegroundColor DarkCyan
         Write-Host ""
         $choice = Read-Host "   Select an option"
         switch ($choice) {

@@ -1654,25 +1654,34 @@ def run_identify(cfg):
 # Menu + dispatch
 # ---------------------------------------------------------------------------
 def show_menu(cfg):
+    mw = 62
+    def ml(text, color="90"):
+        print(_c("36", "  |") + _c(color, text[:mw].ljust(mw)) + _c("36", "|"))
     while True:
+        if _TTY:
+            print("\033[2J\033[H", end="")
+        eq = _c("36", "  +" + "=" * mw + "+")
+        dash = _c("36", "  +" + "-" * mw + "+")
+        title, ver = "   RANSOMWARE  DETECTION  TOOLKIT", "v3.12"
         print()
-        print(_c("36", "=" * 64))
-        print(_c("36", "   Windows Ransomware Detection Toolkit  (Linux / Python)"))
-        print(_c("90", "   Read-only scan - reports saved to the 'reports' folder"))
-        print(_c("36", "=" * 64))
-        print()
-        print("   [1]  Quick scan     home folders (Desktop, Documents, ...)")
-        print("   [2]  Full scan      whole filesystem (root advised)")
-        print("   [3]  Live monitor   real-time early warning (canary + burst)")
-        print("   [4]  Custom path    scan a folder you choose")
-        print("   [5]  Open reports folder")
-        print("   [6]  Update definitions   fetch latest extensions online")
-        print("   [7]  Identify online       open ID Ransomware / No More Ransom")
-        print("   [8]  Baseline snapshot     record a folder's state to compare later")
-        print("   [9]  Diff vs baseline      show what changed since the snapshot")
-        print("   [f]  Fleet dashboard       combine many devices' reports into one view")
-        print("   [t]  Self-test             verify detection works in this environment")
-        print("   [0]  Exit")
+        print(eq)
+        ml(title + " " * max(1, mw - len(title) - len(ver) - 1) + ver, "36")
+        ml("   portable . read-only . Windows + Linux/macOS", "90")
+        print(dash)
+        ml("")
+        ml("    SCAN", "33")
+        ml("      [1] Quick scan      [2] Full scan       [4] Custom path", "97")
+        ml("")
+        ml("    MONITOR  /  COMPARE", "33")
+        ml("      [3] Live monitor    [8] Baseline        [9] Diff", "97")
+        ml("")
+        ml("    FLEET  /  TOOLS", "33")
+        ml("      [F] Fleet board     [6] Update          [7] Identify", "97")
+        ml("      [5] Open reports    [T] Self-test       [0] Exit", "97")
+        ml("")
+        print(dash)
+        ml(("powered by Coosef  ").rjust(mw), "35")
+        print(eq)
         print()
         try:
             choice = input("   Select an option: ").strip()
