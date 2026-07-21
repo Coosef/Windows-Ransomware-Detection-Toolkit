@@ -8,6 +8,9 @@ data/*.bak
 # Local/active config (keep the .example template in the repo)
 toolkit.config.json
 
+# Opt-in / machine-local data (can be large or device-specific)
+data/malware-hashes.txt
+
 # Python bytecode cache
 __pycache__/
 *.pyc

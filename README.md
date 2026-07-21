@@ -122,6 +122,22 @@ başlatmada) yalnızca **kendi** tuzaklarını güvenle temizler — asla birikm
 > Bir şey ayarlamana **gerek yok** — kutudan çıktığı gibi çalışır. Config yalnızca
 > fleet genelinde ortak varsayılan istersen kullanılır.
 
+## 🧩 Ek tespit katmanları
+
+- **Baseline / diff** (menü `8` / `9`): Bir klasörün anlık durumunu kaydet
+  (`-Mode Baseline` / `--mode baseline`), sonra karşılaştır (`-Mode Diff` /
+  `--mode diff`). "En son taramadan beri neler değişti" — ransomware uzantısına
+  yeniden adlandırılan dosyalar, yeni şifreli dosyalar, toplu değişiklik/silme.
+  Aynı cihazı periyodik yeniden taramak için birebir.
+- **Bilinen-zararlı hash (IOC):** `data/malware-hashes.txt` varsa, tarayıcı
+  çalıştırılabilir/script dosyalarının SHA-256'sını bu listeyle karşılaştırır —
+  hasarı değil, **ransomware'in ikilisini** yakalar. `update`, `update-sources.txt`
+  içine `hashes` kaynağı eklersen listeyi otomatik doldurur. Dosya yoksa atlanır.
+- **YARA (opsiyonel):** `yara` komutu kurulu **ve** `data/yara/*.yar` kuralı varsa
+  eşleşmeler bulgu olarak raporlanır. Örnek bir kural gelir. Kurulu değilse sessizce atlanır.
+- **Chi-square:** Şifreli dosyalarda entropiyle birlikte gösterilir (şifreli veri
+  ~tekdüze: entropi ~8.0 ve chi² ~255) — analiste ek bağlam.
+
 ---
 
 ## ⚙️ Gelişmiş Kullanım / Advanced (PowerShell)

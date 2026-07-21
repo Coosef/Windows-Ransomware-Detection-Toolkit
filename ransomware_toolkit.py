@@ -180,19 +180,24 @@ def _read_lines(path):
 # Helpers
 # ---------------------------------------------------------------------------
 def file_entropy(path, sample=32768):
+    """Return (shannon_entropy 0-8, chi_square). Encrypted data is close to a
+    uniform byte distribution: entropy ~8.0 AND chi-square near 255."""
     try:
         with open(path, "rb") as f:
             data = f.read(sample)
     except OSError:
-        return -1.0
+        return (-1.0, -1.0)
     if not data:
-        return -1.0
+        return (-1.0, -1.0)
     n = len(data)
+    counts = Counter(data)
     ent = 0.0
-    for c in Counter(data).values():
+    for c in counts.values():
         p = c / n
         ent -= p * math.log2(p)
-    return round(ent, 3)
+    exp = n / 256.0
+    chi = sum((counts.get(b, 0) - exp) ** 2 / exp for b in range(256)) if exp > 0 else -1.0
+    return (round(ent, 3), round(chi, 1))
 
 def read_text_head(path, limit=200 * 1024):
     try:
@@ -454,6 +459,13 @@ def run_scan(cfg, targets, mode_label):
     skip_prefixes = tuple(sorted(set(
         os.path.abspath(x) + os.sep for x in (SCRIPT_DIR, cfg["data_dir"], cfg["output_dir"]))))
 
+    malhashes = load_hashset(cfg["data_dir"])      # optional known-malware hash IOC
+    yara_rules = find_yara_rules(cfg["data_dir"])  # optional YARA rules
+    if malhashes:
+        info(f"Hash IOC      : {len(malhashes):,} known-malicious hashes loaded")
+    if yara_rules:
+        info(f"YARA          : {len(yara_rules)} rule file(s) loaded")
+
     for target in targets:
         info(f"Scanning: {target}")
         base = target if os.path.isdir(target) else os.path.dirname(target)
@@ -531,12 +543,20 @@ def run_scan(cfg, targets, mode_label):
             # fonts, binaries, media) is NOT ransomware on its own.
             if (auto_hit and not cfg["no_entropy"] and 1024 <= size <= max_bytes
                     and ext_low not in NATURAL_HIGH_ENTROPY):
-                ent = file_entropy(path)
+                ent, chi = file_entropy(path)
                 if ent >= cfg["entropy_threshold"]:
                     susp_file = True
                     findings.append(_finding("High", "Encrypted", path,
-                        f"Community-listed extension '{ext}' + high entropy {ent}/8.0 - likely encrypted",
+                        f"Community-listed extension '{ext}' + high entropy {ent}/8.0 (chi2 {chi}) - likely encrypted",
                         entropy=ent, mtime=st.st_mtime))
+
+            # Layer 6: known-malware hash IOC (only for small executables/scripts)
+            if malhashes and ext_low in EXECUTABLE_EXTS and 0 < size <= 64 * 1024 * 1024:
+                digest = sha256_file(path)
+                if digest and digest.lower() in malhashes:
+                    susp_file = True
+                    findings.append(_finding("High", "KnownMalware", path,
+                        f"File hash matches a known-malicious IOC (sha256 {digest[:16]}...)", mtime=st.st_mtime))
 
             # count recently-modified SUSPICIOUS files per folder (for mass-change)
             if susp_file and st.st_mtime >= recent_cutoff:
@@ -569,6 +589,12 @@ def run_scan(cfg, targets, mode_label):
         if len(dirs) >= 3:
             findings.append(_finding("High", "NoteSpread", sorted(dirs)[0],
                 f"Ransom note '{note}' found in {len(dirs)} different folders", mtime=recent_cutoff))
+
+    # Layer 7 (optional): YARA rule matches
+    if yara_rules:
+        for hit in run_yara(yara_rules, targets):
+            findings.append(_finding("High", "YARA", hit["path"],
+                f"YARA rule matched: {hit['rule']}", mtime=None))
 
     # summary + verdict
     high   = [f for f in findings if f["severity"] == "High"]
@@ -643,6 +669,170 @@ def likely_families(findings, fam_db):
             seen.add(hit["name"])
             out.append(hit)
     return out
+
+# ---------------------------------------------------------------------------
+# BASELINE / DIFF  (snapshot a folder now, compare later)
+# ---------------------------------------------------------------------------
+def _baseline_path(cfg, targets):
+    host = system_inventory().get("hostname") or hostname()
+    safe = re.sub(r"[^A-Za-z0-9._-]", "-", host) or "host"
+    tag = re.sub(r"[^A-Za-z0-9]", "", "".join(sorted(targets)))[-24:] or "all"
+    d = os.path.join(cfg["output_dir"], "baselines")
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, f"{safe}_{tag}.baseline.json")
+
+def run_baseline(cfg, targets):
+    print()
+    print(_c("36", "  Baseline snapshot  -  records the current file state to compare later"))
+    files = {}
+    n = 0
+    for t in targets:
+        for path in (walk_files(t) if os.path.isdir(t) else iter([t])):
+            try:
+                st = os.stat(path, follow_symlinks=False)
+                if st.st_mode & 0o170000 != 0o100000:
+                    continue
+                files[path] = [int(st.st_size), int(st.st_mtime)]
+                n += 1
+            except OSError:
+                continue
+    bp = _baseline_path(cfg, targets)
+    with open(bp, "w", encoding="utf-8") as f:
+        json.dump({"created": datetime.now().isoformat(timespec="seconds"),
+                   "targets": targets, "files": files}, f)
+    ok(f"Baseline saved: {n:,} files -> {bp}")
+    return 0
+
+def run_diff(cfg, targets):
+    bp = _baseline_path(cfg, targets)
+    if not os.path.isfile(bp):
+        bad(f"No baseline for these paths yet. Run:  --mode baseline --path {' '.join(targets)}")
+        return 3
+    started = time.time()
+    with open(bp, encoding="utf-8") as f:
+        base = json.load(f)
+    old = base.get("files", {})
+    ioc = load_ioc(cfg["data_dir"])
+    known = ioc["exact"] | ioc["auto"]
+
+    print()
+    print(_c("36", "  Diff vs baseline  -  what changed since the snapshot"))
+    info(f"Baseline created: {base.get('created')}  ({len(old):,} files)")
+
+    findings = []
+    current = set()
+    changed = 0
+    for t in targets:
+        for path in (walk_files(t) if os.path.isdir(t) else iter([t])):
+            try:
+                st = os.stat(path, follow_symlinks=False)
+                if st.st_mode & 0o170000 != 0o100000:
+                    continue
+            except OSError:
+                continue
+            current.add(path)
+            ext = os.path.splitext(path)[1].lower()
+            prev = old.get(path)
+            if prev is None:
+                # brand-new file with a ransomware extension
+                if ext in known:
+                    findings.append(_finding("High", "NewRansomExt", path,
+                        f"New file with ransomware extension '{ext}' since baseline", mtime=st.st_mtime))
+                # a rename original.ext -> original.ext.<ransom>: strip ext, was it a baseline file now gone?
+                base_no_ext = path[: -len(ext)] if ext else path
+                if ext in known and base_no_ext in old and base_no_ext not in current:
+                    findings.append(_finding("High", "Encrypted", path,
+                        f"'{os.path.basename(base_no_ext)}' appears encrypted/renamed to '{ext}' since baseline",
+                        mtime=st.st_mtime))
+            else:
+                if [int(st.st_size), int(st.st_mtime)] != prev:
+                    changed += 1
+    deleted = [p for p in old if p not in current]
+
+    if changed >= cfg["mass_threshold"]:
+        findings.append(_finding("High", "MassChange", targets[0],
+            f"{changed} baseline files were modified since the snapshot (possible mass encryption)",
+            mtime=started))
+    if len(deleted) >= cfg["mass_threshold"]:
+        findings.append(_finding("High", "MassDelete", targets[0],
+            f"{len(deleted)} files present in the baseline are now gone (originals deleted after encryption?)",
+            mtime=started))
+
+    high = [f for f in findings if f["severity"] == "High"]
+    verdict = "RANSOMWARE INDICATORS FOUND" if high else "NO SIGNIFICANT CHANGE"
+    info(f"Changed: {changed:,}   New: {len(current) - (len(old) - len(deleted)):,}   Deleted: {len(deleted):,}")
+    print("  RESULT: " + _c("31" if high else "32", verdict))
+    for f in high[:20]:
+        bad(f"[{f['type']}] {f['path']} -> {f['detail']}")
+    elapsed = time.time() - started
+    fam = likely_families(findings, load_families(cfg["data_dir"]))
+    paths = write_reports(cfg, "Diff", targets, started, elapsed, len(current),
+                          0, findings, high, [], [], verdict, fam, system_inventory())
+    ok(f"Report: {paths['html']}")
+    return 2 if high else 0
+
+def sha256_file(path, cap=64 * 1024 * 1024):
+    import hashlib
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            read = 0
+            while read < cap:
+                chunk = f.read(1024 * 1024)
+                if not chunk:
+                    break
+                h.update(chunk); read += len(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+# Executable / script types worth hashing against a known-malware list (catch the
+# ransomware BINARY itself, not just the damage). Only these are hashed, so the
+# scan stays fast.
+EXECUTABLE_EXTS = set(x.lower() for x in
+    [".exe", ".dll", ".scr", ".com", ".pif", ".cpl", ".sys", ".msi", ".jar",
+     ".js", ".jse", ".vbs", ".vbe", ".wsf", ".ps1", ".bat", ".cmd", ".hta", ".lnk", ".elf", ".bin"])
+
+def load_hashset(data_dir):
+    """SHA-256 hashes of known-malicious files (data/malware-hashes.txt). Optional:
+    if the file is absent, hash checking is skipped entirely (zero cost)."""
+    p = os.path.join(data_dir, "malware-hashes.txt")
+    s = set()
+    if os.path.isfile(p):
+        for line in _read_lines(p):
+            t = line.strip().lower().split()[0] if line.strip() else ""
+            if len(t) == 64 and all(c in "0123456789abcdef" for c in t):
+                s.add(t)
+    return s
+
+def find_yara_rules(data_dir):
+    """Return a list of .yar rule files if the 'yara' CLI and data/yara/*.yar both
+    exist; else None. Fully optional - no dependency required by default."""
+    try:
+        if not shutil.which("yara"):
+            return None
+    except Exception:
+        return None
+    ydir = os.path.join(data_dir, "yara")
+    if not os.path.isdir(ydir):
+        return None
+    rules = [os.path.join(ydir, f) for f in os.listdir(ydir) if f.lower().endswith((".yar", ".yara"))]
+    return rules or None
+
+def run_yara(rules, targets):
+    hits = []
+    for r in rules:
+        for t in targets:
+            try:
+                out = subprocess.run(["yara", "-r", "-w", "-N", r, t],
+                                     capture_output=True, text=True, timeout=300)
+                for line in out.stdout.splitlines():
+                    parts = line.split(" ", 1)
+                    if len(parts) == 2 and os.path.exists(parts[1]):
+                        hits.append({"rule": parts[0], "path": parts[1]})
+            except Exception:
+                pass
+    return hits
 
 # ---------------------------------------------------------------------------
 # Reports
@@ -1067,6 +1257,20 @@ def run_update(cfg):
                     community.add(e)
                     added += 1
             info(f"  accepted {added} clean extensions from this source")
+        elif typ == "hashes":
+            # extract every sha256 token (works for plain lists and CSV feeds), union
+            # with any existing malware-hashes.txt, and write it back
+            found = set(m.lower() for m in re.findall(r"\b[0-9a-fA-F]{64}\b", content))
+            dest = os.path.join(cfg["data_dir"], target if target.endswith(".txt") else "malware-hashes.txt")
+            if os.path.isfile(dest):
+                for line in _read_lines(dest):
+                    t = line.strip().lower()
+                    if len(t) == 64:
+                        found.add(t)
+            with open(dest, "w", encoding="utf-8") as f:
+                f.write("# known-malicious sha256 hashes (auto-updated by 'update')\n")
+                f.write("\n".join(sorted(found)) + "\n")
+            info(f"  {len(found)} known-malicious hashes -> {os.path.basename(dest)}")
 
     if community:
         curated = set()
@@ -1142,6 +1346,8 @@ def show_menu(cfg):
         print("   [5]  Open reports folder")
         print("   [6]  Update definitions   fetch latest extensions online")
         print("   [7]  Identify online       open ID Ransomware / No More Ransom")
+        print("   [8]  Baseline snapshot     record a folder's state to compare later")
+        print("   [9]  Diff vs baseline      show what changed since the snapshot")
         print("   [0]  Exit")
         print()
         try:
@@ -1166,6 +1372,14 @@ def show_menu(cfg):
             run_update(cfg); _pause()
         elif choice == "7":
             run_identify(cfg); _pause()
+        elif choice == "8":
+            t = input("   Folder to snapshot (blank = user folders): ").strip()
+            tg = resolve_targets("custom", [t]) if t else resolve_targets("quick", None)
+            run_baseline(cfg, tg); _pause()
+        elif choice == "9":
+            t = input("   Folder to diff (blank = user folders): ").strip()
+            tg = resolve_targets("custom", [t]) if t else resolve_targets("quick", None)
+            run_diff(cfg, tg); _pause()
         elif choice == "0":
             return
 
@@ -1202,7 +1416,7 @@ def build_cfg(a):
 
 def main():
     ap = argparse.ArgumentParser(description="Windows Ransomware Detection Toolkit - Linux/Python edition")
-    ap.add_argument("--mode", choices=["menu", "quick", "full", "custom", "watch", "update"], default="menu")
+    ap.add_argument("--mode", choices=["menu", "quick", "full", "custom", "watch", "update", "baseline", "diff"], default="menu")
     ap.add_argument("--path", nargs="+", help="paths to scan (custom) or watch")
     ap.add_argument("--recent-hours", type=int, default=24, dest="recent_hours")
     ap.add_argument("--mass-threshold", type=int, default=40, dest="mass_threshold")
@@ -1257,6 +1471,10 @@ def main():
         run_watch(cfg, a.path)
     elif mode == "update":
         run_update(cfg)
+    elif mode == "baseline":
+        sys.exit(run_baseline(cfg, resolve_targets("custom", a.path) or resolve_targets("quick", None)))
+    elif mode == "diff":
+        sys.exit(run_diff(cfg, resolve_targets("custom", a.path) or resolve_targets("quick", None)))
 
 if __name__ == "__main__":
     main()

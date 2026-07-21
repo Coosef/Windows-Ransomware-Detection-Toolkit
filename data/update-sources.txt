@@ -25,3 +25,11 @@ trusted    families.json          https://raw.githubusercontent.com/Coosef/Windo
 # --- Community lists (filtered, additive-only into extensions-auto.txt) -----
 community  extensions-auto        https://raw.githubusercontent.com/dannyroemhild/ransomware-fileext-list/master/fileextlist.txt
 community  extensions-auto        https://raw.githubusercontent.com/thephoton/ransomware/master/filescreenextensions.txt
+
+# --- OPTIONAL: known-malicious file-hash feed --------------------------------
+# 'hashes' sources pull every sha256 token from the URL into data/malware-hashes.txt.
+# The scanner then flags executables/scripts whose hash matches. Off by default
+# because feeds can be large; uncomment and point at a feed you trust, e.g. a
+# ransomware-tagged export. (Verify the feed's terms of use.)
+# hashes   malware-hashes.txt     https://<your-hash-feed-url>
+

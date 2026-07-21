@@ -1,5 +1,26 @@
 # Changelog
 
+## 3.5 — Deeper detection (baseline/diff, hash IOC, YARA, chi-square)
+
+New detection layers, all cross-platform (PowerShell + Python) and tested.
+
+- **Baseline / diff mode** — `--mode baseline` records a folder's file state; later
+  `--mode diff` reports what changed: files renamed to a ransomware extension,
+  new ransomware-extension files, mass modifications, and originals deleted after
+  encryption. Ideal for periodic re-scans of the same fleet device. (Menu 8 / 9.)
+- **Known-malware hash IOC** — the scanner SHA-256s executables/scripts and flags
+  any that match `data/malware-hashes.txt`, catching the ransomware binary itself
+  (not just the damage). `update` can auto-populate the list from a `hashes` feed
+  (opt-in in `update-sources.txt`). Skipped entirely when the file is absent.
+- **YARA (optional)** — if the `yara` CLI and `data/yara/*.yar` rules are present,
+  matches are reported as findings. A sample generic ransom-note rule is included.
+  No dependency required; the layer no-ops when yara is absent.
+- **Chi-square** shown alongside entropy on likely-encrypted files (encrypted data
+  is near-uniform: entropy ~8.0 and chi-square ~255), giving analysts extra context.
+
+Note: a Windows-specific "defense evasion" detector (Volume Shadow Copy / backup
+deletion) is still to come - it needs verification on a real Windows host.
+
 ## 3.4 — Fleet features (inventory, device-first reports, config, CI)
 
 Aimed at running the same scan across many (50-60) machines.

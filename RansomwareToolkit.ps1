@@ -43,7 +43,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Menu','Quick','Full','Custom','Watch','Update')]
+    [ValidateSet('Menu','Quick','Full','Custom','Watch','Update','Baseline','Diff')]
     [string]$Mode = 'Menu',
     [string[]]$Path,
 
@@ -315,6 +315,17 @@ function Invoke-Update {
             }
             Write-Info "  accepted $added clean extensions from this source"
         }
+        elseif ($type -eq 'hashes') {
+            $found = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+            foreach ($m in [regex]::Matches($content, '\b[0-9a-fA-F]{64}\b')) { [void]$found.Add($m.Value.ToLower()) }
+            $dest = Join-Path $DataDir $(if ($target -like '*.txt') { $target } else { 'malware-hashes.txt' })
+            if (Test-Path $dest) { foreach ($l in Get-Content -LiteralPath $dest) { $t = $l.Trim().ToLower(); if ($t.Length -eq 64) { [void]$found.Add($t) } } }
+            $hsb = New-Object System.Text.StringBuilder
+            [void]$hsb.AppendLine('# known-malicious sha256 hashes (auto-updated by Update)')
+            foreach ($h in ($found | Sort-Object)) { [void]$hsb.AppendLine($h) }
+            Set-Content -LiteralPath $dest -Value $hsb.ToString() -Encoding UTF8
+            Write-Info "  $($found.Count) known-malicious hashes -> $(Split-Path $dest -Leaf)"
+        }
     }
 
     if ($communityExt.Count -gt 0) {
@@ -386,15 +397,67 @@ function Get-FileEntropy {
         if ($read -le 0) { return -1 }
         $counts = New-Object 'int[]' 256
         for ($i = 0; $i -lt $read; $i++) { $counts[$buffer[$i]]++ }
-        $entropy = 0.0
+        $entropy = 0.0; $exp = $read / 256.0; $chi = 0.0
         for ($b = 0; $b -lt 256; $b++) {
             $c = $counts[$b]
             if ($c -gt 0) { $p = $c / $read; $entropy -= $p * [Math]::Log($p, 2) }
+            if ($exp -gt 0) { $d = $c - $exp; $chi += ($d * $d) / $exp }
         }
-        return [Math]::Round($entropy, 3)
+        return [pscustomobject]@{ Entropy = [Math]::Round($entropy, 3); Chi = [Math]::Round($chi, 1) }
     }
-    catch { return -1 }
+    catch { return [pscustomobject]@{ Entropy = -1; Chi = -1 } }
     finally { if ($fs) { $fs.Dispose() } }
+}
+
+function Get-FileSha256 {
+    param([string]$FilePath)
+    try { return (Get-FileHash -LiteralPath $FilePath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLower() }
+    catch { return $null }
+}
+
+function Import-HashSet {
+    param([string]$Dir)
+    $set = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $p = Join-Path $Dir 'malware-hashes.txt'
+    if (Test-Path $p) {
+        foreach ($raw in Get-Content -LiteralPath $p) {
+            $t = ($raw.Trim() -split '\s+')[0]
+            if ($t -and $t.Length -eq 64 -and $t -match '^[0-9a-fA-F]{64}$') { [void]$set.Add($t.ToLower()) }
+        }
+    }
+    return $set
+}
+
+$script:ExecutableExts = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+foreach ($e in @('.exe','.dll','.scr','.com','.pif','.cpl','.sys','.msi','.jar','.js','.jse','.vbs','.vbe',
+                 '.wsf','.ps1','.bat','.cmd','.hta','.lnk','.elf','.bin')) { [void]$script:ExecutableExts.Add($e) }
+
+function Get-YaraRules {
+    param([string]$Dir)
+    if (-not (Get-Command yara -ErrorAction SilentlyContinue)) { return @() }
+    $ydir = Join-Path $Dir 'yara'
+    if (-not (Test-Path $ydir)) { return @() }
+    return @(Get-ChildItem -LiteralPath $ydir -File -ErrorAction SilentlyContinue |
+             Where-Object { $_.Extension -in '.yar', '.yara' } | ForEach-Object { $_.FullName })
+}
+function Invoke-Yara {
+    param([string[]]$Rules, [string[]]$Targets)
+    $hits = @()
+    foreach ($r in $Rules) {
+        foreach ($t in $Targets) {
+            try {
+                $out = & yara -r -w -N $r $t 2>$null
+                foreach ($line in $out) {
+                    $idx = $line.IndexOf(' ')
+                    if ($idx -gt 0) {
+                        $rule = $line.Substring(0, $idx); $p = $line.Substring($idx + 1)
+                        if (Test-Path -LiteralPath $p) { $hits += [pscustomobject]@{ rule = $rule; path = $p } }
+                    }
+                }
+            } catch { }
+        }
+    }
+    return $hits
 }
 
 function Resolve-Targets {
@@ -488,6 +551,10 @@ function Invoke-Scan {
     $ioc = Import-IocData -Dir $DataDir
     Write-Info ("IOC loaded    : {0} curated (+{1} community) extensions, {2} note patterns, {3} keywords" -f `
         ($ioc.ExtExact.Count + $ioc.ExtWild.Count), $ioc.ExtAuto.Count, $ioc.NoteRegex.Count, $ioc.Keywords.Count)
+    $script:MalHashes = Import-HashSet -Dir $DataDir   # optional known-malware hash IOC
+    if ($script:MalHashes.Count) { Write-Info ("Hash IOC      : {0} known-malicious hashes loaded" -f $script:MalHashes.Count) }
+    $yaraRules = Get-YaraRules -Dir $DataDir           # optional YARA rules
+    if ($yaraRules.Count) { Write-Info ("YARA          : {0} rule file(s) loaded" -f $yaraRules.Count) }
     Write-Info ("Targets       : {0}" -f ($Targets -join ' ; '))
     Write-Host ""
 
@@ -593,12 +660,24 @@ function Invoke-Scan {
                 # objects, fonts, binaries, media) is NOT ransomware on its own.
                 if ($autoHit -and -not $NoEntropy -and $file.Length -ge 1KB -and $file.Length -le $maxBytes `
                         -and -not $script:NaturalHighEntropy.Contains($extLow)) {
-                    $ent = Get-FileEntropy -FilePath $file.FullName
-                    if ($ent -ge $EntropyThreshold) {
+                    $e = Get-FileEntropy -FilePath $file.FullName
+                    if ($e.Entropy -ge $EntropyThreshold) {
                         $suspFile = $true
                         Add-Finding -Severity 'High' -Type 'Encrypted' -FilePath $file.FullName `
-                            -Detail ("Community-listed extension '{0}' + high entropy {1}/8.0 - likely encrypted" -f $ext, $ent) `
-                            -Entropy $ent -Modified $file.LastWriteTime
+                            -Detail ("Community-listed extension '{0}' + high entropy {1}/8.0 (chi2 {2}) - likely encrypted" -f $ext, $e.Entropy, $e.Chi) `
+                            -Entropy $e.Entropy -Modified $file.LastWriteTime
+                    }
+                }
+
+                # Layer 6: known-malware hash IOC (only for small executables/scripts)
+                if ($script:MalHashes.Count -and $script:ExecutableExts.Contains($extLow) `
+                        -and $file.Length -gt 0 -and $file.Length -le 64MB) {
+                    $digest = Get-FileSha256 -FilePath $file.FullName
+                    if ($digest -and $script:MalHashes.Contains($digest)) {
+                        $suspFile = $true
+                        Add-Finding -Severity 'High' -Type 'KnownMalware' -FilePath $file.FullName `
+                            -Detail ("File hash matches a known-malicious IOC (sha256 {0}...)" -f $digest.Substring(0,16)) `
+                            -Modified $file.LastWriteTime
                     }
                 }
 
@@ -640,6 +719,14 @@ function Invoke-Scan {
             Add-Finding -Severity 'High' -Type 'NoteSpread' -FilePath ($dirs | Select-Object -First 1) `
                 -Detail ("Ransom note '{0}' found in {1} different folders" -f $note, $dirs.Count) `
                 -Modified $recentCutoff
+        }
+    }
+
+    # Layer 7 (optional): YARA rule matches
+    if ($yaraRules.Count) {
+        foreach ($hit in (Invoke-Yara -Rules $yaraRules -Targets $Targets)) {
+            Add-Finding -Severity 'High' -Type 'YARA' -FilePath $hit.path `
+                -Detail ("YARA rule matched: {0}" -f $hit.rule) -Modified $recentCutoff
         }
     }
 
@@ -1044,6 +1131,109 @@ Created: $stamp
 }
 
 # ===========================================================================
+# Baseline / diff  (snapshot a folder now, compare later)
+# ===========================================================================
+function Get-BaselinePath {
+    param([string[]]$Targets)
+    $h = $env:COMPUTERNAME; if (-not $h) { try { $h = [System.Net.Dns]::GetHostName() } catch { $h = 'host' } }
+    $safe = ($h -replace '[^A-Za-z0-9._-]', '-'); if (-not $safe) { $safe = 'host' }
+    $tag = (($Targets | Sort-Object) -join '') -replace '[^A-Za-z0-9]', ''
+    if ($tag.Length -gt 24) { $tag = $tag.Substring($tag.Length - 24) }
+    if (-not $tag) { $tag = 'all' }
+    $d = Join-Path $OutputDir 'baselines'
+    if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+    return Join-Path $d "${safe}_${tag}.baseline.txt"
+}
+function Invoke-Baseline {
+    param([string[]]$Targets)
+    Write-Host ""
+    Write-Host "  Baseline snapshot - records the current file state to compare later" -ForegroundColor Cyan
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.AppendLine("# baseline created $((Get-Date).ToString('s'))")
+    $n = 0
+    foreach ($t in $Targets) {
+        Get-ChildItem -LiteralPath $t -Recurse -File -Force -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) { return }
+            $mt = [long]($_.LastWriteTimeUtc - [datetime]'1970-01-01').TotalSeconds
+            [void]$sb.AppendLine(("{0}|{1}|{2}" -f [long]$_.Length, $mt, $_.FullName)); $n++
+        }
+    }
+    $bp = Get-BaselinePath -Targets $Targets
+    Set-Content -LiteralPath $bp -Value $sb.ToString() -Encoding UTF8
+    Write-Ok ("Baseline saved: {0} files -> {1}" -f $n, $bp)
+    return 0
+}
+function Invoke-Diff {
+    param([string[]]$Targets)
+    $bp = Get-BaselinePath -Targets $Targets
+    if (-not (Test-Path $bp)) { Write-Bad "No baseline for these paths. Run:  -Mode Baseline -Path $($Targets -join ' ')"; return 3 }
+    $started = Get-Date
+    $old = @{}
+    foreach ($line in Get-Content -LiteralPath $bp) {
+        if (-not $line -or $line.StartsWith('#')) { continue }
+        $p = $line.Split('|', 3)
+        if ($p.Count -eq 3) { $old[$p[2]] = @([long]$p[0], [long]$p[1]) }
+    }
+    $ioc = Import-IocData -Dir $DataDir
+    $known = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($e in $ioc.ExtExact) { [void]$known.Add($e) }
+    foreach ($e in $ioc.ExtAuto) { [void]$known.Add($e) }
+
+    Write-Host ""
+    Write-Host "  Diff vs baseline - what changed since the snapshot" -ForegroundColor Cyan
+    $script:findings = New-Object System.Collections.ArrayList
+    $current = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $script:diffChanged = 0
+    foreach ($t in $Targets) {
+        Get-ChildItem -LiteralPath $t -Recurse -File -Force -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) { return }
+            $fp = $_.FullName; [void]$current.Add($fp)
+            $ext = $_.Extension.ToLowerInvariant()
+            $mt = [long]($_.LastWriteTimeUtc - [datetime]'1970-01-01').TotalSeconds
+            if ($old.ContainsKey($fp)) {
+                $o = $old[$fp]
+                if ($o[0] -ne [long]$_.Length -or $o[1] -ne $mt) { $script:diffChanged++ }
+            } elseif ($known.Contains($ext)) {
+                Add-Finding -Severity 'High' -Type 'NewRansomExt' -FilePath $fp `
+                    -Detail "New file with ransomware extension '$ext' since baseline" -Modified $_.LastWriteTime
+                $baseNoExt = $fp.Substring(0, $fp.Length - $ext.Length)
+                if ($old.ContainsKey($baseNoExt) -and -not $current.Contains($baseNoExt)) {
+                    Add-Finding -Severity 'High' -Type 'Encrypted' -FilePath $fp `
+                        -Detail ("'{0}' appears encrypted/renamed to '{1}' since baseline" -f (Split-Path $baseNoExt -Leaf), $ext) `
+                        -Modified $_.LastWriteTime
+                }
+            }
+        }
+    }
+    $deleted = @($old.Keys | Where-Object { -not $current.Contains($_) })
+    if ($script:diffChanged -ge $MassChangeThreshold) {
+        Add-Finding -Severity 'High' -Type 'MassChange' -FilePath $Targets[0] `
+            -Detail ("{0} baseline files were modified since the snapshot (possible mass encryption)" -f $script:diffChanged)
+    }
+    if ($deleted.Count -ge $MassChangeThreshold) {
+        Add-Finding -Severity 'High' -Type 'MassDelete' -FilePath $Targets[0] `
+            -Detail ("{0} files present in the baseline are now gone (originals deleted after encryption?)" -f $deleted.Count)
+    }
+    $high = @($script:findings | Where-Object { $_.Severity -eq 'High' })
+    $verdict = if ($high.Count) { 'RANSOMWARE INDICATORS FOUND' } else { 'NO SIGNIFICANT CHANGE' }
+    Write-Info ("Changed: {0}   Deleted: {1}   Findings: {2}" -f $script:diffChanged, $deleted.Count, $high.Count)
+    Write-Host ("  RESULT: {0}" -f $verdict) -ForegroundColor $(if ($high.Count) { 'Red' } else { 'Green' })
+    foreach ($f in ($high | Select-Object -First 20)) { Write-Bad ("[{0}] {1} -> {2}" -f $f.Type, $f.Path, $f.Detail) }
+
+    # concise TXT + JSON report
+    if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null }
+    $stamp = $started.ToString('yyyyMMdd_HHmmss')
+    $h = $env:COMPUTERNAME; if (-not $h) { try { $h = [System.Net.Dns]::GetHostName() } catch { $h = 'host' } }
+    $safe = ($h -replace '[^A-Za-z0-9._-]', '-'); if (-not $safe) { $safe = 'host' }
+    $rp = Join-Path $OutputDir "${safe}_RansomwareDiff_${stamp}"
+    [pscustomobject]@{ meta = [ordered]@{ tool='Windows Ransomware Detection Toolkit'; mode='Diff'; computer=$h;
+        baseline=$bp; targets=$Targets; changed=$script:diffChanged; deleted=$deleted.Count; verdict=$verdict };
+        findings = $script:findings } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath "$rp.json" -Encoding UTF8
+    Write-Ok "Report: $rp.json"
+    return $(if ($high.Count) { 2 } else { 0 })
+}
+
+# ===========================================================================
 # Interactive menu
 # ===========================================================================
 function Show-Menu {
@@ -1061,6 +1251,8 @@ function Show-Menu {
         Write-Host "   [5]  Open reports folder"
         Write-Host "   [6]  Update definitions   fetch latest extensions online"
         Write-Host "   [7]  Identify online       open ID Ransomware / No More Ransom"
+        Write-Host "   [8]  Baseline snapshot     record a folder's state to compare later"
+        Write-Host "   [9]  Diff vs baseline      show what changed since the snapshot"
         Write-Host "   [0]  Exit"
         Write-Host ""
         $choice = Read-Host "   Select an option"
@@ -1076,6 +1268,16 @@ function Show-Menu {
             '5' { if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null }; try { Invoke-Item -LiteralPath $OutputDir } catch { } }
             '6' { Invoke-Update; [void](Read-Host "`n   Press Enter to return to the menu") }
             '7' { Invoke-IdentifyOnline -Fam (Import-Families -Dir $DataDir); [void](Read-Host "`n   Press Enter to return to the menu") }
+            '8' {
+                $t = Read-Host "   Folder to snapshot (blank = user folders)"
+                [void](Invoke-Baseline -Targets ($(if ($t) { Resolve-Targets -Path @($t) } else { Resolve-Targets })))
+                [void](Read-Host "`n   Press Enter to return to the menu")
+            }
+            '9' {
+                $t = Read-Host "   Folder to diff (blank = user folders)"
+                [void](Invoke-Diff -Targets ($(if ($t) { Resolve-Targets -Path @($t) } else { Resolve-Targets })))
+                [void](Read-Host "`n   Press Enter to return to the menu")
+            }
             '0' { return }
             default { }
         }
@@ -1111,4 +1313,6 @@ switch ($Mode) {
     'Custom' { exit (Invoke-Scan -Targets (Resolve-Targets -Path $Path) -ModeLabel 'Custom') }
     'Watch'  { Invoke-Watch -WatchPath $Path }
     'Update' { Invoke-Update }
+    'Baseline' { exit (Invoke-Baseline -Targets ($(if ($Path) { Resolve-Targets -Path $Path } else { Resolve-Targets }))) }
+    'Diff'     { exit (Invoke-Diff     -Targets ($(if ($Path) { Resolve-Targets -Path $Path } else { Resolve-Targets }))) }
 }
