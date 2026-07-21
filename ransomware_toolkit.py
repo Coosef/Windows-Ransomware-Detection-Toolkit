@@ -83,6 +83,8 @@ NATURAL_HIGH_ENTROPY = set(x.lower() for x in [
     ".pb", ".glb", ".gltf", ".fbx", ".blend", ".3mf", ".f3d", ".usdz", ".stl",
     ".h5", ".pt", ".pth", ".onnx", ".tflite", ".safetensors", ".gguf", ".ggml", ".pmml",
     ".numbers", ".pages", ".key",
+    # app packages / bundles (compressed or encrypted by design -> high entropy)
+    ".spa", ".appx", ".appxbundle", ".msix", ".msixbundle", ".xpi", ".vsix", ".asar", ".pak", ".crx",
 ])
 TEXT_EXTENSIONS = set(x.lower() for x in
     [".txt", ".html", ".htm", ".hta", ".rtf", ".md", ".log", ".nfo", ".readme", ".conf", ".cfg", ".sh"])
@@ -1384,7 +1386,8 @@ DENY_EXT = set(x.lower() for x in [
     ".psd", ".so", ".o", ".a", ".ko", ".py", ".c", ".h", ".sh", ".rb", ".go", ".rs", ".php",
     # too-common / legit extensions removed from the curated list - keep them out of
     # the community list too so they can't re-false-positive via the entropy path
-    ".inc", ".java", ".arrow", ".abc", ".rdm", ".pb", ".glb"])
+    ".inc", ".java", ".arrow", ".abc", ".rdm", ".pb", ".glb",
+    ".spa", ".appx", ".appxbundle", ".msix", ".msixbundle", ".xpi", ".vsix", ".asar", ".pak"])
 
 def clean_extension(line):
     l = line.strip()

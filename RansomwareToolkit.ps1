@@ -115,6 +115,13 @@ function Write-Ok    ($m) { Write-Host "[+] $m" -ForegroundColor Green }
 function Write-Warn2 ($m) { Write-Host "[!] $m" -ForegroundColor Yellow }
 function Write-Bad   ($m) { Write-Host "[X] $m" -ForegroundColor Red }
 
+# Write UTF-8 WITHOUT a BOM. Windows PowerShell 5.1's "Set-Content -Encoding UTF8"
+# prepends a BOM, which breaks standard JSON parsers / SIEM ingestion.
+function Write-Utf8NoBom {
+    param([string]$Path, [string]$Content)
+    [System.IO.File]::WriteAllText($Path, [string]$Content, (New-Object System.Text.UTF8Encoding($false)))
+}
+
 function Test-IsAdmin {
     try {
         return ([Security.Principal.WindowsPrincipal] `
@@ -349,7 +356,8 @@ function Invoke-Update {
                      '.keystore','.vmdk','.vdi','.ova','.torrent','.cr2','.nef','.arw','.dng','.raw','.psd',
                      # too-common/legit extensions removed from the curated list - keep them out of
                      # the community list too so they cannot re-false-positive via the entropy path
-                     '.inc','.java','.arrow','.abc','.rdm','.pb','.glb')) { [void]$denySet.Add($d) }
+                     '.inc','.java','.arrow','.abc','.rdm','.pb','.glb',
+                     '.spa','.appx','.appxbundle','.msix','.msixbundle','.xpi','.vsix','.asar','.pak')) { [void]$denySet.Add($d) }
 
     $communityExt = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     $trustedOk = 0; $trustedFail = 0; $commSources = 0
@@ -374,7 +382,7 @@ function Invoke-Update {
             elseif ((($content -split "`n").Count) -lt 5) { $ok = $false }
             if (-not $ok) { Write-Warn2 "  validation failed, keeping current $target"; $trustedFail++; continue }
             if (Test-Path $dest) { Copy-Item -LiteralPath $dest -Destination "$dest.bak" -Force -ErrorAction SilentlyContinue }
-            Set-Content -LiteralPath $dest -Value $content -Encoding UTF8
+            Write-Utf8NoBom -Path $dest -Content $content
             Write-Ok "  updated $target"; $trustedOk++
         }
         elseif ($type -eq 'community') {
@@ -393,7 +401,7 @@ function Invoke-Update {
             $hsb = New-Object System.Text.StringBuilder
             [void]$hsb.AppendLine('# known-malicious sha256 hashes (auto-updated by Update)')
             foreach ($h in ($found | Sort-Object)) { [void]$hsb.AppendLine($h) }
-            Set-Content -LiteralPath $dest -Value $hsb.ToString() -Encoding UTF8
+            Write-Utf8NoBom -Path $dest -Content $hsb.ToString()
             Write-Info "  $($found.Count) known-malicious hashes -> $(Split-Path $dest -Leaf)"
         }
     }
@@ -419,7 +427,7 @@ function Invoke-Update {
         [void]$sb.AppendLine("# minus anything already in extensions.txt. Loaded automatically by the scanner.")
         [void]$sb.AppendLine(("# Total: {0}" -f $final.Count)); [void]$sb.AppendLine("")
         foreach ($e in $final) { [void]$sb.AppendLine($e) }
-        Set-Content -LiteralPath $autoFile -Value $sb.ToString() -Encoding UTF8
+        Write-Utf8NoBom -Path $autoFile -Content $sb.ToString()
         Write-Ok ("extensions-auto.txt now holds {0} community extensions" -f $final.Count)
     }
     elseif ($commSources -gt 0) { Write-Warn2 "No community extensions parsed (sources unreachable?)." }
@@ -588,7 +596,8 @@ foreach ($e in @('.zip','.7z','.rar','.gz','.bz2','.xz','.tar','.tgz','.cab','.j
                  '.woff','.woff2','.ttf','.otf','.eot',
                  '.pb','.glb','.gltf','.fbx','.blend','.3mf','.f3d','.usdz','.stl',
                  '.h5','.pt','.pth','.onnx','.tflite','.safetensors','.gguf','.ggml','.pmml',
-                 '.numbers','.pages','.key')) { [void]$script:NaturalHighEntropy.Add($e) }
+                 '.numbers','.pages','.key',
+                 '.spa','.appx','.appxbundle','.msix','.msixbundle','.xpi','.vsix','.asar','.pak','.crx')) { [void]$script:NaturalHighEntropy.Add($e) }
 
 $script:TextExtensions = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
 foreach ($e in @('.txt','.html','.htm','.hta','.rtf','.md','.log','.nfo','.readme')) { [void]$script:TextExtensions.Add($e) }
@@ -906,8 +915,7 @@ function Invoke-Scan {
         counts=[ordered]@{ high=$high.Count; medium=$medium.Count; low=$low.Count }
         likelyFamilies=@($likely | ForEach-Object { [ordered]@{ name=$_.name; decryptor=$_.decryptor; tool=$_.tool; url=$_.url } })
     }
-    [pscustomobject]@{ meta=$meta; findings=$findings } |
-        ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $jsonPath -Encoding UTF8
+    Write-Utf8NoBom -Path $jsonPath -Content ([pscustomobject]@{ meta=$meta; findings=$findings } | ConvertTo-Json -Depth 6)
 
     $txt = New-Object System.Text.StringBuilder
     [void]$txt.AppendLine('Windows Ransomware Detection Toolkit - Scan Report')
@@ -951,7 +959,7 @@ function Invoke-Scan {
         }
         [void]$txt.AppendLine('')
     }
-    $txt.ToString() | Set-Content -LiteralPath $txtPath -Encoding UTF8
+    Write-Utf8NoBom -Path $txtPath -Content $txt.ToString()
 
     # CSV (findings, for Excel / SIEM)
     $csvPath = Join-Path $OutputDir "$baseName.csv"
@@ -963,7 +971,7 @@ function Invoke-Scan {
         $vals = @($host_, $f.Severity, $f.Type, $f.Path, $f.Detail, $ent, $mod)
         [void]$csv.AppendLine((($vals | ForEach-Object { '"' + ([string]$_ -replace '"', "'") + '"' }) -join ','))
     }
-    Set-Content -LiteralPath $csvPath -Value $csv.ToString() -Encoding UTF8
+    Write-Utf8NoBom -Path $csvPath -Content $csv.ToString()
 
     $rowsHtml = New-Object System.Text.StringBuilder
     foreach ($sev in @('High','Medium','Low')) {
@@ -1065,7 +1073,7 @@ $($rowsHtml.ToString())
  </div>
 </div></body></html>
 "@
-    $html | Set-Content -LiteralPath $htmlPath -Encoding UTF8
+    Write-Utf8NoBom -Path $htmlPath -Content $html
 
     Write-Host ""
     Write-Ok "Reports saved:"
@@ -1300,7 +1308,7 @@ function Invoke-Baseline {
         }
     }
     $bp = Get-BaselinePath -Targets $Targets
-    Set-Content -LiteralPath $bp -Value $sb.ToString() -Encoding UTF8
+    Write-Utf8NoBom -Path $bp -Content $sb.ToString()
     Write-Ok ("Baseline saved: {0} files -> {1}" -f $n, $bp)
     return 0
 }
@@ -1369,7 +1377,7 @@ function Invoke-Diff {
     $rp = Join-Path $OutputDir "${safe}_RansomwareDiff_${stamp}"
     [pscustomobject]@{ meta = [ordered]@{ tool='Windows Ransomware Detection Toolkit'; mode='Diff'; computer=$h;
         baseline=$bp; targets=$Targets; changed=$script:diffChanged; deleted=$deleted.Count; verdict=$verdict };
-        findings = $script:findings } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath "$rp.json" -Encoding UTF8
+        findings = $script:findings } | ConvertTo-Json -Depth 6 | ForEach-Object { Write-Utf8NoBom -Path "$rp.json" -Content $_ }
     Write-Ok "Report: $rp.json"
     return $(if ($high.Count) { 2 } else { 0 })
 }
@@ -1419,7 +1427,7 @@ function Invoke-Fleet {
         $vals = @($d.host, $d.verdict, $d.high, $d.medium, $d.low, $d.families, $d.os, $d.model, $d.user, $d.ips, $d.mode, $d.files, $d.started)
         [void]$csv.AppendLine((($vals | ForEach-Object { '"' + ([string]$_ -replace '"', "'") + '"' }) -join ','))
     }
-    Set-Content -LiteralPath "$base.csv" -Value $csv.ToString() -Encoding UTF8
+    Write-Utf8NoBom -Path "$base.csv" -Content $csv.ToString()
 
     # HTML
     $tr = New-Object System.Text.StringBuilder
@@ -1457,7 +1465,7 @@ $($tr.ToString())
  <div class="foot">Latest report per device. Collect each machine's reports\*.json into one folder and run: -Mode Fleet -Path &lt;folder&gt;.</div>
 </div></body></html>
 "@
-    Set-Content -LiteralPath "$base.html" -Value $html -Encoding UTF8
+    Write-Utf8NoBom -Path "$base.html" -Content $html
     Write-Ok "Dashboard: $base.html"
     Write-Ok "CSV:       $base.csv"
     if ($OpenReport) { try { Invoke-Item -LiteralPath "$base.html" } catch { } }

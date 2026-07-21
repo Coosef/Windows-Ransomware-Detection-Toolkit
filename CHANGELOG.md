@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.10 — Windows fixes (BOM, Spotify false positive)
+
+Found by a real Windows 10 test run.
+
+- **UTF-8 BOM removed from all outputs.** Windows PowerShell 5.1's
+  `Set-Content -Encoding UTF8` prepends a byte-order mark, which broke standard
+  JSON parsers, SIEM ingestion and the Python fleet aggregator reading a
+  PowerShell report. All report/data files are now written as UTF-8 without a BOM.
+- **Fixed a false positive on app packages.** A full scan flagged Spotify `.spa`
+  files (and similar high-entropy app bundles). `.spa`, `.appx`, `.msix`, `.xpi`,
+  `.vsix`, `.asar`, `.pak` and friends are now treated as naturally high-entropy
+  and kept out of the community extension list.
+
+(Verified on Windows: inventory now includes model, serial, CPU, RAM, IP/MAC,
+uptime and installed antivirus; Quick/Full/Diff/Fleet all work.)
+
 ## 3.9 — Self-test & ransom-note family identification
 
 - **Self-test** (`--mode selftest` / menu `T`) — builds a synthetic attack and a
