@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd agent for the live monitor (macOS). Edit the paths, then:
+
+    cp service/com.wrdt.monitor.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.wrdt.monitor.plist
+    launchctl start com.wrdt.monitor
+    # logs: /tmp/wrdt-monitor.out  and  /tmp/wrdt-monitor.err
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.wrdt.monitor</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/PATH/TO/ransomware_toolkit.py</string>
+    <string>--mode</string><string>watch</string>
+    <string>--path</string><string>/Users/CHANGE_ME/Documents</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/wrdt-monitor.out</string>
+  <key>StandardErrorPath</key><string>/tmp/wrdt-monitor.err</string>
+</dict>
+</plist>

@@ -10,5 +10,13 @@
   "burst_threshold": 25,
   "burst_window": 5,
 
-  "open_report": false
+  "open_report": false,
+
+  "_alerts": "Optional: push monitor/scan alarms to a webhook or Telegram (leave blank to disable).",
+  "notify_webhook": "",
+  "notify_telegram_token": "",
+  "notify_telegram_chat": "",
+
+  "_contain": "Optional & DISRUPTIVE: actions to run on alarm. e.g. [\"killproc\",\"network\",\"lock\"]. Empty = off.",
+  "contain": []
 }

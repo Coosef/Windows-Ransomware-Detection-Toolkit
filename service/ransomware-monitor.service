@@ -1,0 +1,22 @@
+# systemd unit for the live monitor (Linux). Runs it in the background and
+# restarts it if it dies. Edit the paths/user, then:
+#
+#   sudo cp service/ransomware-monitor.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ransomware-monitor
+#   journalctl -u ransomware-monitor -f      # watch its output
+#
+[Unit]
+Description=Windows Ransomware Detection Toolkit - live monitor
+After=network.target
+
+[Service]
+Type=simple
+User=CHANGE_ME
+# Watch the user's important folders (edit --path as needed):
+ExecStart=/usr/bin/python3 /opt/ransomware-toolkit/ransomware_toolkit.py --mode watch --path /home/CHANGE_ME/Documents
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

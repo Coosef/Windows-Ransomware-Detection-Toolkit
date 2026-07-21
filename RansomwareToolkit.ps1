@@ -58,6 +58,12 @@ param(
     [int]$BurstThreshold = 25,
     [int]$BurstWindowSec = 5,
 
+    # --- notifications / containment (group B) ---
+    [string]$NotifyWebhook,
+    [string]$NotifyTelegramToken,
+    [string]$NotifyTelegramChat,
+    [string]$Contain,          # opt-in, comma list: killproc,network,lock
+
     # --- common ---
     [string]$OutputDir,
     [string]$DataDir,
@@ -86,6 +92,8 @@ if (Test-Path $cfgFile) {
             entropy_threshold = 'EntropyThreshold';   max_mb          = 'MaxFileSizeMB'
             no_entropy        = 'NoEntropy';          burst_threshold = 'BurstThreshold'
             burst_window      = 'BurstWindowSec';     open_report     = 'OpenReport'
+            notify_webhook    = 'NotifyWebhook';      notify_telegram_token = 'NotifyTelegramToken'
+            notify_telegram_chat = 'NotifyTelegramChat'; contain      = 'Contain'
         }
         foreach ($k in $map.Keys) {
             $p = $map[$k]
@@ -162,6 +170,50 @@ function Get-SystemInventory {
         if ($av) { $inv.antivirus = @($av | ForEach-Object { $_.displayName }) }
     } catch { }
     return $inv
+}
+
+function Send-Notification {
+    param([string]$Title, [string]$Text)
+    $hn = $env:COMPUTERNAME; if (-not $hn) { try { $hn = [System.Net.Dns]::GetHostName() } catch { $hn = 'host' } }
+    $msg = "[$hn] $Title - $Text"
+    $sent = @()
+    try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
+    if ($NotifyWebhook) {
+        try {
+            $body = @{ text = $msg; content = $msg } | ConvertTo-Json
+            Invoke-RestMethod -Uri $NotifyWebhook -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 10 | Out-Null
+            $sent += 'webhook'
+        } catch { Write-Warn2 "webhook notify failed: $($_.Exception.Message)" }
+    }
+    if ($NotifyTelegramToken -and $NotifyTelegramChat) {
+        try {
+            $u = "https://api.telegram.org/bot$NotifyTelegramToken/sendMessage"
+            Invoke-RestMethod -Uri $u -Method Post -Body @{ chat_id = $NotifyTelegramChat; text = $msg } -TimeoutSec 10 | Out-Null
+            $sent += 'telegram'
+        } catch { Write-Warn2 "telegram notify failed: $($_.Exception.Message)" }
+    }
+    return $sent
+}
+
+function Get-Culprit {
+    # Best-effort: which process has <Path> open. Windows needs handle.exe/Restart
+    # Manager (not built-in), so this returns empty there for now; kept for parity.
+    param([string]$Path)
+    return [pscustomobject]@{ Name = ''; Pids = @() }
+}
+
+function Invoke-Containment {
+    param([string[]]$Pids)
+    if (-not $Contain) { return }
+    foreach ($a in @($Contain -split '[,\s]+' | Where-Object { $_ })) {
+        try {
+            switch ($a.ToLower()) {
+                'killproc' { foreach ($procId in $Pids) { try { Stop-Process -Id ([int]$procId) -Force -ErrorAction SilentlyContinue; Write-Warn2 "containment: killed process $procId" } catch { } } }
+                'network'  { try { Disable-NetAdapter -Name '*' -Confirm:$false -ErrorAction SilentlyContinue; Write-Warn2 'containment: network disabled' } catch { } }
+                'lock'     { try { & rundll32.exe user32.dll,LockWorkStation; Write-Warn2 'containment: session locked' } catch { } }
+            }
+        } catch { Write-Warn2 "containment '$a' failed: $($_.Exception.Message)" }
+    }
 }
 
 function Import-IocData {
@@ -946,6 +998,8 @@ $($rowsHtml.ToString())
     if ($high.Count -gt 0) {
         Write-Host ""
         Write-Bad "ACTION: disconnect from network, do NOT reboot or pay, keep the report, call your AV/IR team."
+        $chans = Send-Notification -Title 'RANSOMWARE INDICATORS FOUND' -Text ("{0} high-severity findings in a {1} scan" -f $high.Count, $ModeLabel)
+        if ($chans.Count) { Write-Ok ("Alert sent via: {0}" -f ($chans -join ', ')) }
     }
     if ($OpenReport) { try { Invoke-Item -LiteralPath $htmlPath } catch { } }
 
@@ -972,7 +1026,9 @@ function Invoke-Watch {
         Add-Content -LiteralPath $logPath -Value $line
     }
     function Invoke-Alarm {
-        param([string]$Title, [string]$Detail)
+        param([string]$Title, [string]$Detail, [string]$Path)
+        $culprit = if ($Path) { Get-Culprit -Path $Path } else { [pscustomobject]@{ Name=''; Pids=@() } }
+        if ($culprit.Name) { $Detail = "$Detail  [process: $($culprit.Name)]" }
         Write-Host ""
         Write-Host ('#' * 64) -ForegroundColor Red
         Write-Host ("#  RANSOMWARE ALARM: {0}" -f $Title) -ForegroundColor Red
@@ -981,6 +1037,9 @@ function Invoke-Watch {
         Write-Host "  -> DISCONNECT network/Wi-Fi now.  Do NOT reboot.  Do NOT pay." -ForegroundColor Yellow
         Write-Host "  -> Note the time, keep this log, contact your AV/IR team." -ForegroundColor Yellow
         try { for ($i = 0; $i -lt 5; $i++) { [console]::Beep(1100, 250); [console]::Beep(760, 250) } } catch { }
+        $chans = Send-Notification -Title ("RANSOMWARE ALARM: {0}" -f $Title) -Text $Detail
+        if ($chans.Count) { Write-WLog 'INFO' ("Alert sent via: {0}" -f ($chans -join ', ')) }
+        Invoke-Containment -Pids $culprit.Pids
     }
 
     if (-not $WatchPath) {
@@ -1054,6 +1113,10 @@ Created: $stamp
     Write-Host ('=' * 64) -ForegroundColor DarkCyan
     Write-WLog 'INFO' ("Watching: " + ($WatchPath -join ' ; '))
     Write-WLog 'INFO' ("Burst rule: >{0} changes / {1}s   Log: {2}" -f $BurstThreshold, $BurstWindowSec, $logPath)
+    $nch = @(); if ($NotifyWebhook) { $nch += 'webhook' }
+    if ($NotifyTelegramToken -and $NotifyTelegramChat) { $nch += 'telegram' }
+    if ($nch.Count) { Write-WLog 'INFO' ("Alerts enabled: {0}" -f ($nch -join ', ')) }
+    if ($Contain) { Write-WLog 'WARN' ("Auto-containment ARMED: {0} (disruptive)" -f $Contain) }
     Set-Canaries
 
     $watchers = New-Object System.Collections.ArrayList
@@ -1093,7 +1156,7 @@ Created: $stamp
                 if ($canarySet.Contains($full) -or ($oldPath -and $canarySet.Contains($oldPath))) {
                     if ($change -ne 'Created' -and ($now - $lastCanary).TotalSeconds -ge $cooldownSec) {
                         $lastCanary = $now
-                        Invoke-Alarm -Title 'CANARY TRIPPED' -Detail ("Decoy file was ${change}: $full")
+                        Invoke-Alarm -Title 'CANARY TRIPPED' -Detail ("Decoy file was ${change}: $full") -Path $full
                     }
                     continue
                 }
@@ -1101,7 +1164,7 @@ Created: $stamp
                     $bad = $false; $why = ''
                     if ($ext -and $extExact.Contains($ext)) { $bad = $true; $why = "known ransomware extension '$ext'" }
                     if (-not $bad) { foreach ($rx in $noteRegex) { if ($fname -match $rx) { $bad = $true; $why = "ransom-note name '$fname'"; break } } }
-                    if ($bad) { Invoke-Alarm -Title 'SUSPICIOUS FILE' -Detail ("$why  ->  $full") }
+                    if ($bad) { Invoke-Alarm -Title 'SUSPICIOUS FILE' -Detail ("$why  ->  $full") -Path $full }
                 }
                 if ($change -eq 'Changed' -or $change -eq 'Renamed') {
                     $eventTimes.Enqueue($now)

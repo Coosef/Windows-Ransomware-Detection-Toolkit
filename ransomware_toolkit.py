@@ -50,6 +50,7 @@ import argparse
 import subprocess
 import webbrowser
 import urllib.request
+import urllib.parse
 from collections import Counter
 from datetime import datetime
 
@@ -644,6 +645,10 @@ def run_scan(cfg, targets, mode_label):
     if high:
         print()
         bad("ACTION: disconnect from network, do NOT reboot or pay, keep the report, call your IR/AV team.")
+        chans = send_notification(cfg, "RANSOMWARE INDICATORS FOUND",
+                                  f"{len(high)} high-severity findings in a {mode_label} scan")
+        if chans:
+            ok(f"Alert sent via: {', '.join(chans)}")
     if cfg["open_report"]:
         try:
             webbrowser.open("file://" + paths["html"])
@@ -1024,7 +1029,12 @@ def run_watch(cfg, paths):
         with open(log_path, "a", encoding="utf-8") as lf:
             lf.write(line + "\n")
 
-    def alarm(title, detail):
+    def alarm(title, detail, path=None):
+        culprit, pids = ("", [])
+        if path:
+            culprit, pids = find_culprit(path)
+            if culprit:
+                detail = f"{detail}  [process: {culprit}]"
         print()
         print(_c("31", "#" * 64))
         print(_c("31", f"#  RANSOMWARE ALARM: {title}"))
@@ -1037,6 +1047,10 @@ def run_watch(cfg, paths):
             sys.stdout.flush()
         except Exception:
             pass
+        chans = send_notification(cfg, f"RANSOMWARE ALARM: {title}", detail)
+        if chans:
+            wlog("INFO", f"Alert sent via: {', '.join(chans)}")
+        run_containment(cfg, pids)
 
     if not paths:
         home = os.path.expanduser("~")
@@ -1093,6 +1107,11 @@ def run_watch(cfg, paths):
     print(_c("36", "=" * 64))
     wlog("INFO", "Watching: " + " ; ".join(paths))
     wlog("INFO", f"Burst rule: >{cfg['burst_threshold']} changes / {cfg['burst_window']}s   Log: {log_path}")
+    _nch = []
+    if cfg.get("notify_webhook"): _nch.append("webhook")
+    if cfg.get("notify_telegram_token") and cfg.get("notify_telegram_chat"): _nch.append("telegram")
+    if _nch: wlog("INFO", "Alerts enabled: " + ", ".join(_nch))
+    if cfg.get("contain"): wlog("WARN", "Auto-containment ARMED: " + ", ".join(cfg["contain"]) + " (disruptive)")
     plant_canaries()
 
     stop = {"flag": False}
@@ -1127,7 +1146,7 @@ def run_watch(cfg, paths):
                         pass
                 if tripped and now - last_canary >= cooldown:
                     last_canary = now
-                    alarm("CANARY TRIPPED", f"Decoy file was {tripped}: {cp}")
+                    alarm("CANARY TRIPPED", f"Decoy file was {tripped}: {cp}", path=cp)
             # 2) burst + bad drops since last poll
             changed = 0
             bad_drop = None
@@ -1147,7 +1166,7 @@ def run_watch(cfg, paths):
                             bad_drop = (p, e)
             if bad_drop and now - last_drop >= cooldown:
                 last_drop = now
-                alarm("SUSPICIOUS FILE", f"ransomware extension/note -> {bad_drop[0]}")
+                alarm("SUSPICIOUS FILE", f"ransomware extension/note -> {bad_drop[0]}", path=bad_drop[0])
             if changed >= cfg["burst_threshold"] and now - last_burst >= cooldown:
                 last_burst = now
                 alarm("CHANGE BURST", f"{changed} files changed in the last {int(now - last_poll)}s")
@@ -1308,6 +1327,93 @@ def run_update(cfg):
         len(ioc["exact"]) + len(ioc["wild"]), len(ioc["auto"]), len(ioc["notes"]), len(ioc["keywords"])))
 
 # ---------------------------------------------------------------------------
+# Notifications  (push an alert to Telegram / a webhook / e-mail)
+# ---------------------------------------------------------------------------
+def send_notification(cfg, title, text):
+    """Best-effort push alert. Silent no-op when nothing is configured, so it
+    never blocks the monitor. Always includes the device name (fleet context)."""
+    host = system_inventory().get("hostname") or hostname()
+    msg = f"[{host}] {title} - {text}"
+    sent = []
+    wh = cfg.get("notify_webhook")
+    if wh:
+        try:
+            body = json.dumps({"text": msg, "content": msg}).encode()   # Slack uses text, Discord content
+            req = urllib.request.Request(wh, data=body, headers={"Content-Type": "application/json"}, method="POST")
+            urllib.request.urlopen(req, timeout=10)
+            sent.append("webhook")
+        except Exception as e:
+            warn(f"webhook notify failed: {e}")
+    tok, chat = cfg.get("notify_telegram_token"), cfg.get("notify_telegram_chat")
+    if tok and chat:
+        try:
+            body = urllib.parse.urlencode({"chat_id": chat, "text": msg}).encode()
+            req = urllib.request.Request(f"https://api.telegram.org/bot{tok}/sendMessage", data=body, method="POST")
+            urllib.request.urlopen(req, timeout=10)
+            sent.append("telegram")
+        except Exception as e:
+            warn(f"telegram notify failed: {e}")
+    return sent
+
+# ---------------------------------------------------------------------------
+# Offending process + opt-in containment (live monitor)
+# ---------------------------------------------------------------------------
+def find_culprit(path):
+    """Best-effort: which process currently has <path> open (unix: lsof).
+    Returns 'name(pid), ...' plus the raw pid list. Empty when unknown."""
+    names, pids = [], []
+    try:
+        if shutil.which("lsof"):
+            out = subprocess.run(["lsof", "-t", "--", path], capture_output=True, text=True, timeout=3)
+            pids = [p for p in out.stdout.split() if p.isdigit()][:5]
+            for pid in pids:
+                try:
+                    nm = subprocess.run(["ps", "-p", pid, "-o", "comm="],
+                                        capture_output=True, text=True, timeout=3).stdout.strip()
+                    names.append(f"{os.path.basename(nm) or '?'}({pid})")
+                except Exception:
+                    names.append(pid)
+    except Exception:
+        pass
+    return ", ".join(names), pids
+
+def run_containment(cfg, pids):
+    """Opt-in, DEFAULT OFF. Only runs actions listed in cfg['contain'].
+    These are disruptive on purpose - they stop the attack spreading."""
+    actions = cfg.get("contain") or []
+    if not actions:
+        return
+    for a in actions:
+        try:
+            if a == "killproc":
+                for pid in pids:
+                    try:
+                        os.kill(int(pid), signal.SIGKILL)
+                        warn(f"containment: killed process {pid}")
+                    except Exception:
+                        pass
+            elif a == "network":
+                sysname = platform.system()
+                if sysname == "Linux" and shutil.which("nmcli"):
+                    subprocess.run(["nmcli", "networking", "off"], timeout=8)
+                elif sysname == "Darwin":
+                    subprocess.run(["networksetup", "-setairportpower", "en0", "off"], timeout=8)
+                elif sysname == "Windows":
+                    subprocess.run(["powershell", "-Command", "Disable-NetAdapter -Name * -Confirm:$false"], timeout=15)
+                warn("containment: network disabled")
+            elif a == "lock":
+                sysname = platform.system()
+                if sysname == "Linux" and shutil.which("loginctl"):
+                    subprocess.run(["loginctl", "lock-session"], timeout=8)
+                elif sysname == "Darwin":
+                    subprocess.run(["pmset", "displaysleepnow"], timeout=8)
+                elif sysname == "Windows":
+                    subprocess.run(["rundll32.exe", "user32.dll,LockWorkStation"], timeout=8)
+                warn("containment: session locked")
+        except Exception as e:
+            warn(f"containment '{a}' failed: {e}")
+
+# ---------------------------------------------------------------------------
 # Online identification (manual upload)
 # ---------------------------------------------------------------------------
 def run_identify(cfg):
@@ -1412,6 +1518,11 @@ def build_cfg(a):
         "burst_threshold": a.burst_threshold,
         "burst_window": a.burst_window,
         "open_report": a.open_report,
+        "notify_webhook": a.notify_webhook,
+        "notify_telegram_token": getattr(a, "notify_telegram_token", None),
+        "notify_telegram_chat": getattr(a, "notify_telegram_chat", None),
+        "contain": ([x.strip() for x in a.contain.split(",")] if isinstance(a.contain, str)
+                    else list(a.contain)) if getattr(a, "contain", None) else [],
     }
 
 def main():
@@ -1428,12 +1539,17 @@ def main():
     ap.add_argument("--open-report", action="store_true", dest="open_report")
     ap.add_argument("--data-dir", dest="data_dir")
     ap.add_argument("--output-dir", dest="output_dir")
+    ap.add_argument("--notify-webhook", dest="notify_webhook", help="POST alerts to this URL (Slack/Discord/Teams/custom)")
+    ap.add_argument("--notify-telegram-token", dest="notify_telegram_token")
+    ap.add_argument("--notify-telegram-chat", dest="notify_telegram_chat")
+    ap.add_argument("--contain", dest="contain", help="opt-in containment on alarm, comma list: killproc,network,lock")
     ap.add_argument("--config", dest="config", help="path to a JSON config file (default: toolkit.config.json next to the script, if present)")
 
     # OPTIONAL config file: if toolkit.config.json exists (or --config given), its
     # values become the defaults. Command-line flags still override it. Not required.
     known = {"recent_hours", "mass_threshold", "no_entropy", "max_mb", "entropy_threshold",
-             "burst_threshold", "burst_window", "open_report", "data_dir", "output_dir"}
+             "burst_threshold", "burst_window", "open_report", "data_dir", "output_dir",
+             "notify_webhook", "notify_telegram_token", "notify_telegram_chat", "contain"}
     cfg_path = None
     _pre, _ = ap.parse_known_args()
     if _pre.config and os.path.isfile(_pre.config):

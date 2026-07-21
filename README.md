@@ -138,6 +138,26 @@ başlatmada) yalnızca **kendi** tuzaklarını güvenle temizler — asla birikm
 - **Chi-square:** Şifreli dosyalarda entropiyle birlikte gösterilir (şifreli veri
   ~tekdüze: entropi ~8.0 ve chi² ~255) — analiste ek bağlam.
 
+## 🔔 Uyarılar, müdahale ve arka plan servisi
+
+Canlı izlemeyi sen başında olmasan da işe yarar kılmak için:
+
+- **Bildirimler:** Alarm anında (ve tarama High verdiğinde) bir **webhook**
+  (Slack/Discord/Teams/özel) veya **Telegram**'a mesaj gönderir. Her mesaj **cihaz
+  adıyla** başlar (hangi cihaz alarm verdi belli olur).
+  ```
+  --notify-webhook https://...            # Python veya (PS) -NotifyWebhook https://...
+  --notify-telegram-token <t> --notify-telegram-chat <id>
+  ```
+  Veya `toolkit.config.json` içine bir kez yaz.
+- **Suçlu süreç:** Canary/şüpheli-dosya alarmında, dosyaya dokunan süreci (unix
+  `lsof` ile) en iyi çabayla tespit edip log/uyarıya yazar — canlı bakmana gerek kalmaz.
+- **Opt-in müdahale** (varsayılan KAPALI, yıkıcı): `--contain killproc,network,lock`
+  ile alarm anında saldırıyı durdurmayı dener (süreci öldür / ağı kes / oturumu kilitle).
+- **Arka plan servisi:** [`service/`](service/) klasöründe systemd (Linux), launchd
+  (macOS) ve `Install-WindowsTask.ps1` (Windows) şablonları — izleme oturum açılışında
+  başlar, yeniden başlatmadan sonra da çalışır.
+
 ---
 
 ## ⚙️ Gelişmiş Kullanım / Advanced (PowerShell)

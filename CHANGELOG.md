@@ -1,5 +1,24 @@
 # Changelog
 
+## 3.6 — Alerts, containment & background service (group B)
+
+Make the live monitor useful when nobody is watching the screen.
+
+- **Notifications** — push an alert to a webhook (Slack/Discord/Teams/custom) or
+  Telegram on a live-monitor alarm and on a High scan verdict. Every alert leads
+  with the device name (fleet context). Configure with `--notify-webhook` /
+  `--notify-telegram-token`+`--notify-telegram-chat` (Python), `-NotifyWebhook`
+  (PowerShell), or `toolkit.config.json`.
+- **Offending process** — on a canary/suspicious-drop alarm the monitor makes a
+  best-effort attempt (unix `lsof`) to name the process touching the file and
+  records it in the log/alert.
+- **Opt-in containment** — `--contain killproc,network,lock` (default OFF) tries to
+  STOP the attack on alarm: kill the offending process, disable the network, lock
+  the session. Deliberately disruptive; off unless you ask for it.
+- **Background service** — `service/` ships a systemd unit (Linux), a launchd
+  agent (macOS) and `Install-WindowsTask.ps1` (Windows Scheduled Task) so the
+  monitor runs at logon and survives reboots.
+
 ## 3.5 — Deeper detection (baseline/diff, hash IOC, YARA, chi-square)
 
 New detection layers, all cross-platform (PowerShell + Python) and tested.
