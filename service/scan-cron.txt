@@ -1,0 +1,13 @@
+# Scheduled scans on Linux / macOS (cron).
+#
+# Run  crontab -e  and add one of the lines below (edit the path). Reports land in
+# the tool's reports/ folder (or pass --output-dir to a shared location, then feed
+# them to the fleet dashboard: --mode fleet --path <that folder>).
+
+# Daily quick scan at 03:00, write reports to a shared folder:
+0 3 * * *  /usr/bin/python3 /opt/ransomware-toolkit/ransomware_toolkit.py --mode quick --output-dir /srv/ransomware-reports >/dev/null 2>&1
+
+# Weekly full scan (Sunday 02:00), alert to a webhook if anything is found:
+# 0 2 * * 0  /usr/bin/python3 /opt/ransomware-toolkit/ransomware_toolkit.py --mode full --notify-webhook https://hooks.example.com/... >/dev/null 2>&1
+
+# On macOS you can also use a launchd agent with <StartCalendarInterval> instead of cron.

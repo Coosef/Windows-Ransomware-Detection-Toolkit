@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.8 — CSV export, syslog & scheduled scans
+
+- **CSV export** — every scan now also writes a `.csv` of its findings
+  (computer, severity, type, path, detail, entropy, modified) for Excel / SIEM.
+- **Syslog forwarding** — `--syslog host:port` (or `-Syslog`) sends alerts to a
+  syslog collector over UDP, alongside webhook/Telegram.
+- **Scheduled scan templates** in `service/` — `Install-WindowsScanTask.ps1`
+  (Windows daily scan) and `scan-cron.txt` (Linux/macOS cron). Point the reports
+  at a shared folder and feed them to the fleet dashboard.
+
 ## 3.7 — Fleet dashboard & allowlist
 
 - **Fleet dashboard** (`--mode fleet` / menu `F`) — point it at a folder of many

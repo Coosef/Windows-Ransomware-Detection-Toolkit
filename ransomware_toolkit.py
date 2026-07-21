@@ -678,6 +678,7 @@ def run_scan(cfg, targets, mode_label):
     print(_c("36", "     " + paths["html"]))
     print(_c("90", "     " + paths["txt"]))
     print(_c("90", "     " + paths["json"]))
+    print(_c("90", "     " + paths["csv"]))
     if high:
         print()
         bad("ACTION: disconnect from network, do NOT reboot or pay, keep the report, call your IR/AV team.")
@@ -1040,6 +1041,15 @@ def write_reports(cfg, mode_label, targets, started, elapsed, files_seen, bytes_
     with open(txt_path, "w", encoding="utf-8") as tf:
         tf.write("\n".join(lines))
 
+    # CSV (findings, for Excel / SIEM)
+    csv_path = os.path.join(cfg["output_dir"], base + ".csv")
+    with open(csv_path, "w", encoding="utf-8") as cf:
+        cf.write("computer,severity,type,path,detail,entropy,modified\n")
+        for f in findings:
+            ent = f"{f['entropy']:.2f}" if f["entropy"] is not None and f["entropy"] >= 0 else ""
+            vals = [host, f["severity"], f["type"], f["path"], f["detail"], ent, mod_str(f["modified"])]
+            cf.write(",".join('"' + str(v).replace('"', "'") + '"' for v in vals) + "\n")
+
     # HTML
     rows = []
     for sev in ("High", "Medium", "Low"):
@@ -1097,7 +1107,7 @@ def write_reports(cfg, mode_label, targets, started, elapsed, files_seen, bytes_
     with open(html_path, "w", encoding="utf-8") as hf:
         hf.write(doc)
 
-    return {"txt": txt_path, "json": json_path, "html": html_path}
+    return {"txt": txt_path, "json": json_path, "html": html_path, "csv": csv_path}
 
 HTML_HEAD = """<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <title>__TITLE__</title>
@@ -1476,7 +1486,27 @@ def send_notification(cfg, title, text):
             sent.append("telegram")
         except Exception as e:
             warn(f"telegram notify failed: {e}")
+    if send_syslog(cfg, f"{title} - {text}"):
+        sent.append("syslog")
     return sent
+
+def send_syslog(cfg, message):
+    """Optional UDP syslog forwarding to a SIEM/collector (cfg['syslog']='host:port')."""
+    target = cfg.get("syslog")
+    if not target:
+        return False
+    try:
+        host, _, port = str(target).partition(":")
+        port = int(port) if port else 514
+        hn = system_inventory().get("hostname") or "host"
+        ts = datetime.now().strftime("%b %d %H:%M:%S")
+        packet = f"<131>{ts} {hn} RansomwareToolkit: {message}".encode("utf-8", "replace")[:1024]
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.sendto(packet, (host, port)); s.close()
+        return True
+    except Exception as e:
+        warn(f"syslog failed: {e}")
+        return False
 
 # ---------------------------------------------------------------------------
 # Offending process + opt-in containment (live monitor)
@@ -1650,6 +1680,7 @@ def build_cfg(a):
         "notify_telegram_chat": getattr(a, "notify_telegram_chat", None),
         "contain": ([x.strip() for x in a.contain.split(",")] if isinstance(a.contain, str)
                     else list(a.contain)) if getattr(a, "contain", None) else [],
+        "syslog": getattr(a, "syslog", None),
     }
 
 def main():
@@ -1670,13 +1701,14 @@ def main():
     ap.add_argument("--notify-telegram-token", dest="notify_telegram_token")
     ap.add_argument("--notify-telegram-chat", dest="notify_telegram_chat")
     ap.add_argument("--contain", dest="contain", help="opt-in containment on alarm, comma list: killproc,network,lock")
+    ap.add_argument("--syslog", dest="syslog", help="forward alerts to a syslog collector (host:port, UDP)")
     ap.add_argument("--config", dest="config", help="path to a JSON config file (default: toolkit.config.json next to the script, if present)")
 
     # OPTIONAL config file: if toolkit.config.json exists (or --config given), its
     # values become the defaults. Command-line flags still override it. Not required.
     known = {"recent_hours", "mass_threshold", "no_entropy", "max_mb", "entropy_threshold",
              "burst_threshold", "burst_window", "open_report", "data_dir", "output_dir",
-             "notify_webhook", "notify_telegram_token", "notify_telegram_chat", "contain"}
+             "notify_webhook", "notify_telegram_token", "notify_telegram_chat", "contain", "syslog"}
     cfg_path = None
     _pre, _ = ap.parse_known_args()
     if _pre.config and os.path.isfile(_pre.config):

@@ -63,6 +63,7 @@ param(
     [string]$NotifyTelegramToken,
     [string]$NotifyTelegramChat,
     [string]$Contain,          # opt-in, comma list: killproc,network,lock
+    [string]$Syslog,           # forward alerts to a syslog collector (host:port, UDP)
 
     # --- common ---
     [string]$OutputDir,
@@ -93,7 +94,7 @@ if (Test-Path $cfgFile) {
             no_entropy        = 'NoEntropy';          burst_threshold = 'BurstThreshold'
             burst_window      = 'BurstWindowSec';     open_report     = 'OpenReport'
             notify_webhook    = 'NotifyWebhook';      notify_telegram_token = 'NotifyTelegramToken'
-            notify_telegram_chat = 'NotifyTelegramChat'; contain      = 'Contain'
+            notify_telegram_chat = 'NotifyTelegramChat'; contain      = 'Contain'; syslog = 'Syslog'
         }
         foreach ($k in $map.Keys) {
             $p = $map[$k]
@@ -192,7 +193,23 @@ function Send-Notification {
             $sent += 'telegram'
         } catch { Write-Warn2 "telegram notify failed: $($_.Exception.Message)" }
     }
+    if (Send-Syslog -Message "$Title - $Text") { $sent += 'syslog' }
     return $sent
+}
+
+function Send-Syslog {
+    param([string]$Message)
+    if (-not $Syslog) { return $false }
+    try {
+        $parts = $Syslog.Split(':'); $h = $parts[0]
+        $port = if ($parts.Count -gt 1 -and $parts[1]) { [int]$parts[1] } else { 514 }
+        $hn = $env:COMPUTERNAME; if (-not $hn) { try { $hn = [System.Net.Dns]::GetHostName() } catch { $hn = 'host' } }
+        $ts = (Get-Date).ToString('MMM dd HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture)
+        $bytes = [Text.Encoding]::UTF8.GetBytes("<131>$ts $hn RansomwareToolkit: $Message")
+        $udp = New-Object System.Net.Sockets.UdpClient
+        [void]$udp.Send($bytes, $bytes.Length, $h, $port); $udp.Close()
+        return $true
+    } catch { Write-Warn2 "syslog failed: $($_.Exception.Message)"; return $false }
 }
 
 function Get-Culprit {
@@ -924,6 +941,18 @@ function Invoke-Scan {
     }
     $txt.ToString() | Set-Content -LiteralPath $txtPath -Encoding UTF8
 
+    # CSV (findings, for Excel / SIEM)
+    $csvPath = Join-Path $OutputDir "$baseName.csv"
+    $csv = New-Object System.Text.StringBuilder
+    [void]$csv.AppendLine('computer,severity,type,path,detail,entropy,modified')
+    foreach ($f in $findings) {
+        $ent = if ($f.Entropy -ge 0) { '{0:N2}' -f $f.Entropy } else { '' }
+        $mod = if ($f.Modified) { $f.Modified.ToString('yyyy-MM-dd HH:mm') } else { '' }
+        $vals = @($host_, $f.Severity, $f.Type, $f.Path, $f.Detail, $ent, $mod)
+        [void]$csv.AppendLine((($vals | ForEach-Object { '"' + ([string]$_ -replace '"', "'") + '"' }) -join ','))
+    }
+    Set-Content -LiteralPath $csvPath -Value $csv.ToString() -Encoding UTF8
+
     $rowsHtml = New-Object System.Text.StringBuilder
     foreach ($sev in @('High','Medium','Low')) {
         foreach ($f in @($findings | Where-Object { $_.Severity -eq $sev })) {
@@ -1031,6 +1060,7 @@ $($rowsHtml.ToString())
     Write-Host "     $htmlPath" -ForegroundColor Cyan
     Write-Host "     $txtPath"  -ForegroundColor DarkGray
     Write-Host "     $jsonPath" -ForegroundColor DarkGray
+    Write-Host "     $csvPath"  -ForegroundColor DarkGray
     if ($high.Count -gt 0) {
         Write-Host ""
         Write-Bad "ACTION: disconnect from network, do NOT reboot or pay, keep the report, call your AV/IR team."
