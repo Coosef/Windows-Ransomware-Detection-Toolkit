@@ -177,6 +177,7 @@ function Get-SystemInventory {
         $av = Get-CimInstance -Namespace 'root/SecurityCenter2' -ClassName AntiVirusProduct -ErrorAction Stop
         if ($av) { $inv.antivirus = @($av | ForEach-Object { $_.displayName }) }
     } catch { }
+    try { $inv.shadowCopies = @(Get-CimInstance Win32_ShadowCopy -ErrorAction Stop).Count } catch { }
     return $inv
 }
 
@@ -224,6 +225,50 @@ function Get-Culprit {
     # Manager (not built-in), so this returns empty there for now; kept for parity.
     param([string]$Path)
     return [pscustomobject]@{ Name = ''; Pids = @() }
+}
+
+function Test-DefenseEvasion {
+    # Windows-only. Ransomware almost always tries to block recovery: it deletes
+    # Volume Shadow Copies / backups, disables recovery, turns off Defender and
+    # clears the event logs. These are strong, low-false-positive indicators.
+    param([datetime]$Since)
+    if ($env:OS -ne 'Windows_NT') { return }
+
+    # 1) Event-log clears + Defender-disabled = classic anti-forensics (High)
+    $checks = @(
+        @{ Log = 'Security'; Id = 1102; Msg = 'Security audit log was CLEARED (anti-forensics)' },
+        @{ Log = 'System';   Id = 104;  Msg = 'An event log was CLEARED' },
+        @{ Log = 'Microsoft-Windows-Windows Defender/Operational'; Id = 5001; Msg = 'Windows Defender real-time protection was DISABLED' }
+    )
+    foreach ($c in $checks) {
+        try {
+            $ev = Get-WinEvent -FilterHashtable @{ LogName = $c.Log; Id = $c.Id; StartTime = $Since } -MaxEvents 3 -ErrorAction Stop
+            if ($ev) {
+                $when = ($ev | Select-Object -First 1).TimeCreated
+                Add-Finding -Severity 'High' -Type 'DefenseEvasion' -FilePath ("EventLog:{0}/{1}" -f $c.Log, $c.Id) `
+                    -Detail ("{0} (last at {1})" -f $c.Msg, $when) -Modified $when
+            }
+        } catch { }   # log missing / no access / no events - ignore
+    }
+
+    # 2) Recovery-tampering tools run recently (Prefetch) = Medium (some backup
+    #    software legitimately uses vssadmin/wbadmin)
+    try {
+        $pf = Join-Path $env:SystemRoot 'Prefetch'
+        if (Test-Path $pf) {
+            foreach ($tool in 'VSSADMIN', 'WBADMIN', 'BCDEDIT', 'WMIC', 'CIPHER', 'WEVTUTIL') {
+                $hit = @(Get-ChildItem -LiteralPath $pf -Filter "$tool.EXE-*.pf" -Force -ErrorAction SilentlyContinue |
+                         Where-Object { $_.LastWriteTime -ge $Since })
+                if ($hit.Count) {
+                    Add-Finding -Severity 'Medium' -Type 'DefenseEvasion' -FilePath $hit[0].FullName `
+                        -Detail ("$tool.exe ran within the last window (possible shadow-copy/backup tampering)") `
+                        -Modified $hit[0].LastWriteTime
+                }
+            }
+        }
+    } catch { }
+    # (the shadow-copy COUNT is recorded in the inventory for context; a bare "0
+    #  shadows" is not flagged - it is normal on many machines.)
 }
 
 function Invoke-Containment {
@@ -851,6 +896,10 @@ function Invoke-Scan {
                 -Detail ("YARA rule matched: {0}" -f $hit.rule) -Modified $recentCutoff
         }
     }
+
+    # Layer 8 (Windows): defense evasion - shadow-copy/backup deletion, log clears,
+    # Defender disabled (checked once, machine-wide, not per file)
+    Test-DefenseEvasion -Since $recentCutoff
 
     # ---- summarise + verdict ----
     $findings = $script:findings

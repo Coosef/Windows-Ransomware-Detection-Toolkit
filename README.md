@@ -74,6 +74,7 @@ Tek bir disk gezintisiyle (verimli) her dosyaya **5 katman** uygulanır:
 | 3 | **Fidye notu içeriği** / Note content | Küçük metin dosyalarında "your files have been encrypted", "bitcoin", ".onion" gibi ifadeler (`data/note-keywords.txt`) — notu **doğrular** |
 | 4 | **Entropi analizi** / Entropy | Shannon entropisi ile **şifrelenmiş dosya** tespiti. `.zip/.jpg/.mp4/.docx` gibi doğal yüksek-entropili türler hariç tutulur (yanlış pozitif önleme) |
 | 5 | **Toplu değişiklik & yayılma** / Mass-change & spread | Kısa sürede toplu değiştirilen dosyalar, tek tuhaf uzantının bir klasörü doldurması (toplu şifreleme/yeniden adlandırma), aynı fidye notunun birçok klasöre bırakılması |
+| 6 | **Savunma atlatma** / Defense evasion (Windows) | Fidye yazılımının kurtarmayı engelleme izleri: olay günlüğü temizleme, Windows Defender kapatma, `vssadmin/wbadmin/bcdedit` gibi shadow-copy/yedek silme araçlarının yakın zamanda çalıştırılması |
 
 Modern aileler (LockBit 3.0, BlackCat/ALPHV, REvil, Conti...) çoğu zaman kurbana
 özel **rastgele uzantı** kullanır; bunlar sabit listeyle yakalanamaz — 4. ve 5.

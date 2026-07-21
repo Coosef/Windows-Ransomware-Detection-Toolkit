@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.11 — Windows defense-evasion detection
+
+- **Defense-evasion layer (Windows)** — a scan now also checks, machine-wide, for
+  the recovery-blocking actions ransomware performs before/while encrypting:
+  - event-log clears (Security 1102, System 104) and Windows Defender being
+    disabled (Defender 5001) -> High;
+  - recovery-tampering tools run recently via Prefetch (vssadmin, wbadmin,
+    bcdedit, wmic, cipher, wevtutil) -> Medium.
+  Runs once per scan, guarded so it silently no-ops on non-Windows. The shadow-copy
+  count is added to the inventory for context (a bare "0 shadows" is not flagged).
+
 ## 3.10 — Windows fixes (BOM, Spotify false positive)
 
 Found by a real Windows 10 test run.
