@@ -1,0 +1,27 @@
+# Update sources for "Update definitions" ( [6] in the menu / -Mode Update ).
+# ---------------------------------------------------------------------------
+# Format:  <type>  <target>  <url>
+#   type   = trusted | community
+#            trusted   -> file is downloaded and REPLACES the target verbatim
+#                         (use only for repos you control/trust; a .bak is kept).
+#            community -> file is parsed, and only clean ".ext" entries are
+#                         UNION-merged into extensions-auto.txt (never deletes
+#                         anything, never overwrites your curated extensions.txt).
+#   target = file name under data\  (or a logical name for community extensions)
+#   url    = raw download URL
+#
+# Community lists are filtered hard: wildcard/garbage patterns (*.crypto*,
+# *.*obleep, [ZipLOCK]*, hashes) and purely-numeric extensions (which collide
+# with split-archive .001/.007 files) are dropped to avoid false positives.
+#
+# Lines starting with # are ignored. Add or remove sources freely.
+
+# --- Your own repository (trusted: replaces the curated files) --------------
+trusted    extensions.txt         https://raw.githubusercontent.com/Coosef/Windows-Ransomware-Detection-Toolkit/main/data/extensions.txt
+trusted    ransom-note-names.txt  https://raw.githubusercontent.com/Coosef/Windows-Ransomware-Detection-Toolkit/main/data/ransom-note-names.txt
+trusted    note-keywords.txt      https://raw.githubusercontent.com/Coosef/Windows-Ransomware-Detection-Toolkit/main/data/note-keywords.txt
+trusted    families.json          https://raw.githubusercontent.com/Coosef/Windows-Ransomware-Detection-Toolkit/main/data/families.json
+
+# --- Community lists (filtered, additive-only into extensions-auto.txt) -----
+community  extensions-auto        https://raw.githubusercontent.com/dannyroemhild/ransomware-fileext-list/master/fileextlist.txt
+community  extensions-auto        https://raw.githubusercontent.com/thephoton/ransomware/master/filescreenextensions.txt

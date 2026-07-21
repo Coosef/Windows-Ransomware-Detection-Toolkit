@@ -1,0 +1,16 @@
+# Scan/monitor output - keep the folder, ignore generated reports
+reports/*
+!reports/.gitkeep
+
+# Backups created by "Update definitions"
+data/*.bak
+
+# Python bytecode cache
+__pycache__/
+*.pyc
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp

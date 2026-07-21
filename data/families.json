@@ -1,0 +1,88 @@
+{
+  "_comment": "Offline extension/note -> ransomware family map with decryptor hints. 'decryptor' is available | maybe | none. Availability changes over time - always confirm on No More Ransom / the vendor page. Kept intentionally conservative to avoid false hope.",
+  "identifyUrls": {
+    "idRansomware": "https://id-ransomware.malwarehunterteam.com/",
+    "cryptoSheriff": "https://www.nomoreransom.org/crypto-sheriff.php",
+    "noMoreRansomTools": "https://www.nomoreransom.org/en/decryption-tools.html",
+    "emsisoft": "https://www.emsisoft.com/en/ransomware-decryption/",
+    "avast": "https://www.avast.com/ransomware-decryption-tools",
+    "kaspersky": "https://noransom.kaspersky.com/"
+  },
+  "families": [
+    { "name": "STOP/Djvu", "decryptor": "available", "tool": "Emsisoft Decryptor for STOP Djvu (offline keys only)", "url": "https://www.emsisoft.com/en/ransomware-decryption/stop-djvu/",
+      "notes": ["_readme.txt"],
+      "extensions": [".djvu",".stop",".puma",".pumas",".pumax",".tavor",".gero",".hese",".seto",".peta",".moka",".meds",".kvag",".karl",".nesa",".boot",".reco",".bora",".nols",".werd",".coot",".derp",".nppp",".rezm",".lokf",".foop",".remk",".lalo",".opqz",".mppq",".vvoa",".zzla",".qqlc",".pahd",".mkos",".wwka",".rguy",".lomx",".jasa",".qopz",".qore",".wnlu",".zpps",".itqw",".gatq"] },
+
+    { "name": "GandCrab", "decryptor": "available", "tool": "Bitdefender GandCrab decryptor (via No More Ransom)", "url": "https://www.nomoreransom.org/en/decryption-tools.html",
+      "extensions": [".gdcb",".krab",".crab",".gandcrab"] },
+
+    { "name": "TeslaCrypt", "decryptor": "available", "tool": "TeslaDecoder / ESET (via No More Ransom)", "url": "https://www.nomoreransom.org/en/decryption-tools.html",
+      "extensions": [".vvv",".ecc",".ezz",".exx",".xyz",".zzz",".ccc",".micro",".mp3"] },
+
+    { "name": "Maze / Egregor / Sekhmet", "decryptor": "available", "tool": "Emsisoft (master keys released 2022)", "url": "https://www.emsisoft.com/en/ransomware-decryption/",
+      "extensions": [".maze"] },
+
+    { "name": "Avaddon", "decryptor": "available", "tool": "Emsisoft Avaddon decryptor", "url": "https://www.emsisoft.com/en/ransomware-decryption/",
+      "extensions": [".avdn"] },
+
+    { "name": "Nefilim / Nemty", "decryptor": "available", "tool": "Emsisoft", "url": "https://www.emsisoft.com/en/ransomware-decryption/",
+      "extensions": [".nefilim",".NEFILIM"] },
+
+    { "name": "Akira", "decryptor": "maybe", "tool": "Avast decryptor covered some 2023 variants - verify", "url": "https://www.avast.com/ransomware-decryption-tools",
+      "extensions": [".akira"], "notes": ["akira_readme.txt"] },
+
+    { "name": "LockBit", "decryptor": "maybe", "tool": "Some keys released via Operation Cronos (2024) - check No More Ransom", "url": "https://www.nomoreransom.org/en/decryption-tools.html",
+      "extensions": [".lockbit",".abcd"] },
+
+    { "name": "Hive", "decryptor": "maybe", "tool": "Law-enforcement keys (2023) - check No More Ransom", "url": "https://www.nomoreransom.org/en/decryption-tools.html",
+      "extensions": [".hive",".key.hive"] },
+
+    { "name": "REvil / Sodinokibi", "decryptor": "maybe", "tool": "Bitdefender universal decryptor for pre-July-2021 - verify", "url": "https://www.nomoreransom.org/en/decryption-tools.html",
+      "extensions": [".sodinokibi"] },
+
+    { "name": "DarkSide / BlackMatter", "decryptor": "maybe", "tool": "Bitdefender (early variants) - verify", "url": "https://www.nomoreransom.org/en/decryption-tools.html",
+      "extensions": [".darkside"] },
+
+    { "name": "Babuk", "decryptor": "maybe", "tool": "Builder leaked; some variants decryptable - verify", "url": "https://www.nomoreransom.org/en/decryption-tools.html",
+      "extensions": [".babyk",".babuk"] },
+
+    { "name": "Dharma / CrySiS", "decryptor": "maybe", "tool": "RakhniDecryptor covers some sub-variants only", "url": "https://www.nomoreransom.org/crypto-sheriff.php",
+      "extensions": [".dharma",".xtbl",".wallet",".arena",".cezar",".combo",".bip",".gamma",".java",".write",".arrow",".brrr",".gefest",".risk"] },
+
+    { "name": "WannaCry", "decryptor": "maybe", "tool": "wanakiwi (only if the machine was not rebooted)", "url": "https://www.nomoreransom.org/crypto-sheriff.php",
+      "extensions": [".wncry",".wcry",".wnry",".wncryt"] },
+
+    { "name": "Phobos / 8base / Elbie / Faust", "decryptor": "none", "tool": "No public free decryptor - preserve samples", "url": "https://www.nomoreransom.org/crypto-sheriff.php",
+      "extensions": [".phobos",".eight",".eking",".faust",".duck",".elbie",".blend",".LIZARD",".8base"] },
+
+    { "name": "BlackCat / ALPHV", "decryptor": "none", "tool": "No public free decryptor (random extension)", "url": "https://www.nomoreransom.org/crypto-sheriff.php",
+      "extensions": [] },
+
+    { "name": "Play", "decryptor": "none", "tool": "No public free decryptor", "url": "https://www.nomoreransom.org/crypto-sheriff.php",
+      "extensions": [".play"], "notes": ["PLAY-README.txt","ReadMe.PLAY.txt"] },
+
+    { "name": "Royal / BlackSuit", "decryptor": "none", "tool": "No public free decryptor", "url": "https://www.nomoreransom.org/crypto-sheriff.php",
+      "extensions": [".royal",".royal_u",".royal_w"] },
+
+    { "name": "Black Basta", "decryptor": "maybe", "tool": "SRLabs 'Black Basta Buster' worked on some 2022-2023 builds - verify", "url": "https://www.nomoreransom.org/crypto-sheriff.php",
+      "extensions": [".basta"] },
+
+    { "name": "Cl0p", "decryptor": "none", "tool": "No public free decryptor", "url": "https://www.nomoreransom.org/crypto-sheriff.php",
+      "extensions": [".clop",".cl0p",".C_L_O_P"] },
+
+    { "name": "Conti / Ryuk", "decryptor": "none", "tool": "No reliable free decryptor", "url": "https://www.nomoreransom.org/crypto-sheriff.php",
+      "extensions": [".conti",".ryk",".RYK",".RYUK"] },
+
+    { "name": "Medusa / MedusaLocker", "decryptor": "none", "tool": "No public free decryptor", "url": "https://www.nomoreransom.org/crypto-sheriff.php",
+      "extensions": [".medusa",".medusalocker",".MEDUSA"] },
+
+    { "name": "Mallox / TargetCompany", "decryptor": "maybe", "tool": "Avast released a decryptor for some variants - verify", "url": "https://www.avast.com/ransomware-decryption-tools",
+      "extensions": [".mallox",".malox",".mallab",".FARGO",".FARGO3",".exploit",".architek",".herrco"] },
+
+    { "name": "Rhysida", "decryptor": "maybe", "tool": "Academic decryptor (2024) for some builds - verify", "url": "https://www.nomoreransom.org/crypto-sheriff.php",
+      "extensions": [".rhysida"] },
+
+    { "name": "Locky", "decryptor": "none", "tool": "No public free decryptor", "url": "https://www.nomoreransom.org/crypto-sheriff.php",
+      "extensions": [".locky",".zepto",".thor",".osiris",".aesir",".odin"] }
+  ]
+}

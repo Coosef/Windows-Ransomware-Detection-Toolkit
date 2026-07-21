@@ -1,0 +1,73 @@
+# Ransom note file-name patterns (wildcards, matched against the whole file name).
+# A name match alone = Medium severity. If the file CONTENT also matches a
+# keyword from note-keywords.txt, it is escalated to High.
+#
+# Keep patterns reasonably specific to limit false positives on normal
+# "readme.txt" project files.
+
+# ---- Generic decrypt / recovery notes ----
+*how*to*decrypt*
+*how*to*restore*
+*how*recover*files*
+*decrypt*instruction*
+*decrypt*files*.txt
+*decrypt*files*.html
+*decrypt*files*.hta
+*restore*files*.txt
+*restore*my*files*
+*recover*files*.txt
+*recover*your*files*
+*unlock*your*files*
+*your*files*encrypted*
+*files*are*encrypted*
+*read*to*decrypt*
+*read*for*decrypt*
+*readme*decrypt*
+*help*decrypt*
+*help*restore*
+
+# ---- Family-specific note names ----
+_readme.txt
++README-WARNING+.txt
+RyukReadMe.txt
+RyukReadMe.html
+Conti_readme.txt
+CONTI_README.txt
+restore-my-files.txt
+RESTORE-MY-FILES.txt
+RECOVER-FILES.txt
+DECRYPT-FILES.txt
+HELP_DECRYPT.txt
+HELP_DECRYPT.html
+readme_for_decrypt.txt
+!!!ReadMe!!!.txt
+!!! ALL YOUR FILES ARE ENCRYPTED !!!.txt
+FILES ENCRYPTED.txt
+HOW TO BACK FILES.txt
+HOW TO DECRYPT FILES.txt
+How_To_Restore_Your_Files.txt
+readme.hta
+info.hta
+DECRYPT_INSTRUCTIONS.txt
+DECRYPT_INSTRUCTION.txt
+_HELP_INSTRUCTION.txt
+YOUR_FILES_ARE_ENCRYPTED.txt
+YOUR_FILES_ARE_ENCRYPTED.HTML
+RECOVERY INFORMATION.txt
+Read Me.txt
+unlock-info.txt
+restore_files_*.txt
+recovery_key.txt
+attention.txt
+
+# ---- LockBit / Akira / Play / Royal / BlackCat style ----
+*.README.txt
+*.readme.txt
+Restore-My-Files.txt
+akira_readme.txt
+readme.txt.akira
+PLAY-README.txt
+ReadMe.PLAY.txt
+RECOVER-*-FILES.txt
+RECOVER-*-DATA.txt
+*_HOW_TO_DECRYPT*.txt

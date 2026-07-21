@@ -1,0 +1,48 @@
+# Content keywords used to CONFIRM a suspected ransom note.
+# Matched case-insensitively against the text of small (<200 KB) files.
+# One keyword/phrase per line. Lines starting with # are ignored.
+
+your files have been encrypted
+all your files are encrypted
+files have been encrypted
+your files are encrypted
+your network has been
+your data has been
+we have encrypted
+we have downloaded
+have been stolen
+data has been stolen
+your important files
+your documents, photos
+decrypt your files
+decrypt all your files
+recover your files
+restore your files
+buy decryptor
+decryption key
+decryption tool
+private key
+pay the ransom
+the ransom
+bitcoin
+btc wallet
+in bitcoin
+monero
+tor browser
+.onion
+onion link
+telegram
+tox id
+qtox
+session id
+contact us
+do not rename
+do not try to decrypt
+do not use third
+you have 72 hours
+you have 48 hours
+your unique id
+personal id
+this is not a joke
+data leak
+publish your data
