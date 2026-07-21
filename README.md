@@ -11,6 +11,25 @@ yalnızca **tespit eder ve uyarır**.
 
 ---
 
+## 📸 Ekran görüntüleri / Screenshots
+
+**Menü** — çalıştırınca (renkli, çerçeveli):
+
+![Menu](docs/images/menu.png)
+
+**Tarama raporu (HTML)** — envanter + aile/çözücü + bulgular:
+
+![Scan report](docs/images/scan-report.png)
+
+**Fleet panosu** — 50-60 cihazın raporunu tek bakışta *(kötüden iyiye sıralı)*:
+
+![Fleet dashboard](docs/images/fleet-dashboard.png)
+
+> Canlı örnekleri açmak için: [`docs/samples/scan-report.html`](docs/samples/scan-report.html),
+> [`docs/samples/fleet-dashboard.html`](docs/samples/fleet-dashboard.html)
+
+---
+
 ## 🚀 Hızlı Başlangıç / Quick Start
 
 1. Bu klasörün tamamını bir USB belleğe kopyalayın.

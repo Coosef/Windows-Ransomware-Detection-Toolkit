@@ -1,0 +1,33 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<title>Fleet dashboard - 20260721_153116</title>
+<style>
+ :root{--bg:#0f1420;--card:#171d2b;--tx:#e6e9ef;--mut:#8b93a7;--line:#26304a}
+ body{margin:0;font-family:Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--tx)}
+ .wrap{max-width:1100px;margin:0 auto;padding:28px}
+ h1{font-size:20px;margin:0 0 4px}.sub{color:var(--mut);font-size:13px;margin-bottom:20px}
+ .verdict{padding:16px 20px;border-radius:12px;font-size:20px;font-weight:700;margin:18px 0}
+ .verdict.high{background:#3a1620;color:#ff6b81;border:1px solid #5a1e2e}
+ .verdict.medium{background:#3a2f16;color:#ffcf6b;border:1px solid #5a4a1e}
+ .verdict.clean{background:#12321f;color:#5ee08a;border:1px solid #1e5a38}
+ .cards{display:flex;gap:14px;flex-wrap:wrap;margin:16px 0}
+ .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 18px;min-width:120px}
+ .card .n{font-size:26px;font-weight:700}.card .l{color:var(--mut);font-size:12px;text-transform:uppercase;letter-spacing:.5px}
+ table{width:100%;border-collapse:collapse;background:var(--card);border-radius:12px;overflow:hidden;font-size:13px}
+ th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+ th{background:#1d2434;color:var(--mut);font-weight:600}
+ td.path{font-family:Consolas,monospace;word-break:break-all;color:#bcd0ff}
+ .badge{padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700}
+ .badge.high{background:#5a1e2e;color:#ff8ea0}.badge.medium{background:#5a4a1e;color:#ffdf9b}.badge.low{background:#2a3350;color:#9fb2df}
+ tr.high td{background:rgba(90,30,46,.12)}
+ .inv{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:6px 18px 14px;margin:16px 0}
+ .inv h3{font-size:14px;color:var(--tx);margin:12px 0 8px}
+ .invtbl{width:100%;font-size:13px;background:transparent}
+ .invtbl td{border-bottom:1px solid var(--line);padding:6px 10px}
+ .invtbl td.k{color:var(--mut);width:170px;white-space:nowrap}
+ .fam{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:6px 18px 14px;margin:16px 0}
+ .fam h3{font-size:14px;color:var(--tx);margin:12px 0 6px}
+ .fam ul{margin:0;padding-left:18px}.fam li{margin:8px 0;font-size:13px;line-height:1.5}
+ .fam a{color:#8fb6ff;word-break:break-all}.mut{color:var(--mut)}
+ .foot{color:var(--mut);font-size:12px;margin-top:22px;line-height:1.6}
+</style></head><body><div class="wrap">
+<h1>Ransomware Fleet Dashboard</h1><div class='sub'>5 device(s) &middot; generated 2026-07-21 15:31</div><div class='cards'><div class='card'><div class='n' style='color:#ff6b81'>2</div><div class='l'>Infected</div></div><div class='card'><div class='n' style='color:#ffcf6b'>1</div><div class='l'>Suspicious</div></div><div class='card'><div class='n' style='color:#5ee08a'>2</div><div class='l'>Clean</div></div><div class='card'><div class='n'>5</div><div class='l'>Devices</div></div></div><table><thead><tr><th>Device</th><th>Status</th><th>High</th><th>Med</th><th>Low</th><th>Likely family</th><th>OS / model</th><th>User</th><th>IP</th><th>Files</th><th>Last scan</th></tr></thead><tbody><tr class='high'><td><b>PC-MUHASEBE</b></td><td><span class='badge high'>INFECTED</span></td><td style='color:#ff6b81'>47</td><td style='color:#ffcf6b'>3</td><td>0</td><td>LockBit</td><td>Microsoft Windows 10 Pro Dell Latitude 5491</td><td>ayse</td><td class='path'>10.0.0.5</td><td>181000</td><td>2026-07-21T10:00:00</td></tr><tr class='high'><td><b>SRV-DOSYA</b></td><td><span class='badge high'>INFECTED</span></td><td style='color:#ff6b81'>12</td><td style='color:#ffcf6b'>0</td><td>0</td><td>Akira</td><td>Windows Server 2019 Dell PowerEdge R740</td><td>system</td><td class='path'>10.0.0.2</td><td>181000</td><td>2026-07-21T11:30:00</td></tr><tr class='medium'><td><b>PC-DEPO</b></td><td><span class='badge medium'>SUSPICIOUS</span></td><td style='color:#ff6b81'>0</td><td style='color:#ffcf6b'>5</td><td>0</td><td>STOP/Djvu</td><td>Microsoft Windows 10 Pro HP ProDesk 400</td><td>mehmet</td><td class='path'>10.0.0.8</td><td>181000</td><td>2026-07-21T09:00:00</td></tr><tr class='clean'><td><b>PC-SATIS</b></td><td><span class='badge low'>clean</span></td><td style='color:#ff6b81'>0</td><td style='color:#ffcf6b'>0</td><td>0</td><td></td><td>Microsoft Windows 10 Pro HP EliteBook 840</td><td>kemal</td><td class='path'>10.0.0.9</td><td>181000</td><td>2026-07-21T12:15:00</td></tr><tr class='clean'><td><b>PC-YONETIM</b></td><td><span class='badge low'>clean</span></td><td style='color:#ff6b81'>0</td><td style='color:#ffcf6b'>0</td><td>0</td><td></td><td>Microsoft Windows 10 Pro Lenovo ThinkCentre</td><td>fatma</td><td class='path'>10.0.0.3</td><td>181000</td><td>2026-07-21T12:00:00</td></tr></tbody></table><div class='foot'>Latest report per device. Collect each machine's reports/*.json into one folder and point this at it (--mode fleet --path &lt;folder&gt;).</div></div></body></html>
