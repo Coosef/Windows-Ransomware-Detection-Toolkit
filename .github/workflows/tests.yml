@@ -1,0 +1,50 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python compile check
+        run: python3 -m py_compile ransomware_toolkit.py
+
+      - name: PowerShell parse check
+        shell: pwsh
+        run: |
+          $e = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD/RansomwareToolkit.ps1", [ref]$null, [ref]$e)
+          if ($e) { $e | ForEach-Object { Write-Host $_.Message }; exit 1 }
+          Write-Host 'PS parse OK'
+
+      - name: Build fixtures (outside the repo dir; the scanner skips its own folder)
+        run: |
+          set -e
+          mkdir -p /tmp/fx/attack/mass /tmp/fx/clean
+          echo x > "/tmp/fx/attack/a.docx.lockbit"
+          printf 'YOUR FILES HAVE BEEN ENCRYPTED. all your files are encrypted. pay bitcoin .onion decrypt your files\n' > "/tmp/fx/attack/HOW TO DECRYPT FILES.txt"
+          for i in $(seq 1 20); do head -c 3000 /dev/urandom > "/tmp/fx/attack/mass/f$i.crypted"; done
+          echo "reference notes here" > /tmp/fx/clean/reference.txt
+          echo "some ransomware research doc" > /tmp/fx/clean/ransomware_notes.pdf
+          head -c 40000 /dev/urandom > /tmp/fx/clean/app.lock
+
+      - name: Python - detects attack and keeps clean folders clean
+        run: |
+          python3 ransomware_toolkit.py --mode custom --path /tmp/fx/attack --mass-threshold 15 --output-dir /tmp/pr1 > /tmp/po1 || true
+          grep -q "RANSOMWARE INDICATORS FOUND" /tmp/po1 || { echo "FAIL: attack not detected (python)"; cat /tmp/po1; exit 1; }
+          python3 ransomware_toolkit.py --mode custom --path /tmp/fx/clean --output-dir /tmp/pr2 > /tmp/po2 || true
+          grep -q "RESULT: CLEAN" /tmp/po2 || { echo "FAIL: clean folder not clean (python)"; cat /tmp/po2; exit 1; }
+          echo "Python engine OK"
+
+      - name: PowerShell - detects attack and keeps clean folders clean
+        run: |
+          pwsh -NoProfile -File ./RansomwareToolkit.ps1 -Mode Custom -Path /tmp/fx/attack -MassChangeThreshold 15 -OutputDir /tmp/sr1 > /tmp/so1 || true
+          grep -q "RANSOMWARE INDICATORS FOUND" /tmp/so1 || { echo "FAIL: attack not detected (powershell)"; cat /tmp/so1; exit 1; }
+          pwsh -NoProfile -File ./RansomwareToolkit.ps1 -Mode Custom -Path /tmp/fx/clean -OutputDir /tmp/sr2 > /tmp/so2 || true
+          grep -q "RESULT: CLEAN" /tmp/so2 || { echo "FAIL: clean folder not clean (powershell)"; cat /tmp/so2; exit 1; }
+          echo "PowerShell engine OK"

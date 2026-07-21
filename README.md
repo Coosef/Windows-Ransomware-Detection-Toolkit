@@ -106,6 +106,22 @@ başlatmada) yalnızca **kendi** tuzaklarını güvenle temizler — asla birikm
 
 Çıkış kodları, betiği otomasyon/görev zamanlayıcıda kullanmayı kolaylaştırır.
 
+## 🖥️ Çok cihaz / envanter (fleet)
+
+50-60 cihaza tarama yaparken kimin cihazı olduğu anında belli olsun diye:
+
+- **Rapor dosya adı bilgisayar adıyla başlar:**
+  `<BILGISAYARADI>_RansomwareScan_<zaman>.{txt,json,html}` → raporlar cihaza göre sıralanır.
+- **Her rapora cihaz envanteri gömülür** (konsol + TXT + JSON + HTML): bilgisayar adı,
+  OS, model, seri no, CPU/RAM, kullanıcı, domain, IP/MAC, diskler (boş/toplam), uptime
+  ve (Windows) yüklü **antivirüs**.
+- **Opsiyonel config dosyası** (`toolkit.config.json`) — eşikleri bir kez ayarla, aynı
+  dosyayı her USB'ye koy. Komut satırı bayrakları yine üstündedir; dosya yoksa araç
+  varsayılanlarla çalışır. Örnek: [`toolkit.config.example.json`](toolkit.config.example.json).
+
+> Bir şey ayarlamana **gerek yok** — kutudan çıktığı gibi çalışır. Config yalnızca
+> fleet genelinde ortak varsayılan istersen kullanılır.
+
 ---
 
 ## ⚙️ Gelişmiş Kullanım / Advanced (PowerShell)

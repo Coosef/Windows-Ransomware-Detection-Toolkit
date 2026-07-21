@@ -74,6 +74,30 @@ if (-not $OutputDir) { $OutputDir = Join-Path $ScriptRoot 'reports' }
 $ToolkitPath = $PSCommandPath
 if (-not $ToolkitPath) { $ToolkitPath = Join-Path $ScriptRoot 'RansomwareToolkit.ps1' }
 
+# OPTIONAL config: if toolkit.config.json exists next to the script, its values
+# become the defaults for parameters you did NOT pass on the command line. Not
+# required - the toolkit works out of the box without it.
+$cfgFile = Join-Path $ScriptRoot 'toolkit.config.json'
+if (Test-Path $cfgFile) {
+    try {
+        $cfgJson = Get-Content -LiteralPath $cfgFile -Raw | ConvertFrom-Json
+        $map = @{
+            recent_hours      = 'RecentHours';        mass_threshold  = 'MassChangeThreshold'
+            entropy_threshold = 'EntropyThreshold';   max_mb          = 'MaxFileSizeMB'
+            no_entropy        = 'NoEntropy';          burst_threshold = 'BurstThreshold'
+            burst_window      = 'BurstWindowSec';     open_report     = 'OpenReport'
+        }
+        foreach ($k in $map.Keys) {
+            $p = $map[$k]
+            if (-not $PSBoundParameters.ContainsKey($p) -and ($cfgJson.PSObject.Properties.Name -contains $k)) {
+                $v = $cfgJson.$k
+                if ($p -in @('NoEntropy','OpenReport')) { Set-Variable -Name $p -Value ([bool]$v) }
+                else { Set-Variable -Name $p -Value $v }
+            }
+        }
+    } catch { Write-Host "[!] Could not read toolkit.config.json: $($_.Exception.Message)" -ForegroundColor Yellow }
+}
+
 # ===========================================================================
 # Shared helpers
 # ===========================================================================
@@ -93,6 +117,51 @@ function Test-IsAdmin {
 function Convert-WildcardToRegex {
     param([string]$Pattern)
     return ('^' + [regex]::Escape($Pattern).Replace('\*', '.*').Replace('\?', '.') + '$')
+}
+
+function Get-SystemInventory {
+    # Best-effort machine inventory. Every field guarded so it never breaks a scan.
+    # Handy when the same scan is run across many (50-60) devices.
+    $inv = [ordered]@{}
+    $inv.hostname = $env:COMPUTERNAME
+    if (-not $inv.hostname) { try { $inv.hostname = [System.Net.Dns]::GetHostName() } catch { $inv.hostname = 'unknown' } }
+    try { $inv.fqdn = [System.Net.Dns]::GetHostEntry($env:COMPUTERNAME).HostName } catch { $inv.fqdn = '' }
+    $inv.os = ''; $inv.os_version = ''; $inv.arch = $env:PROCESSOR_ARCHITECTURE
+    $inv.user = $env:USERNAME; $inv.domain = $env:USERDOMAIN
+    $inv.model = ''; $inv.serial = ''; $inv.cpu = ''; $inv.cpu_cores = 0
+    $inv.ram_gb = 0; $inv.disks = @(); $inv.ips = @(); $inv.mac = ''; $inv.uptime = ''
+    $inv.scan_time = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    try {
+        $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+        $inv.os = $os.Caption; $inv.os_version = "$($os.Version) build $($os.BuildNumber)"
+        $inv.ram_gb = [math]::Round($os.TotalVisibleMemorySize / 1MB, 1)
+        if ($os.LastBootUpTime) { $up = (Get-Date) - $os.LastBootUpTime; $inv.uptime = "{0}d {1}h" -f $up.Days, $up.Hours }
+    } catch { }
+    try {
+        $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
+        $inv.model = ("{0} {1}" -f $cs.Manufacturer, $cs.Model).Trim()
+        $inv.cpu_cores = $cs.NumberOfLogicalProcessors
+        if ($cs.Domain) { $inv.domain = $cs.Domain }
+    } catch { }
+    try { $inv.serial = (Get-CimInstance Win32_BIOS -ErrorAction Stop).SerialNumber } catch { }
+    try { $inv.cpu = (Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1).Name } catch { }
+    try {
+        $inv.disks = @(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' -ErrorAction Stop | ForEach-Object {
+            [ordered]@{ mount = $_.DeviceID; total_gb = [math]::Round($_.Size/1GB,1); free_gb = [math]::Round($_.FreeSpace/1GB,1) } })
+    } catch { }
+    try {
+        $inv.ips = @(Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True' -ErrorAction Stop |
+            ForEach-Object { $_.IPAddress } | Where-Object { $_ -and $_ -notlike 'fe80*' -and $_ -notlike '127.*' })
+        $mac = (Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True' -ErrorAction Stop |
+            Select-Object -First 1).MACAddress
+        if ($mac) { $inv.mac = $mac }
+    } catch { }
+    # antivirus (Windows client SecurityCenter2)
+    try {
+        $av = Get-CimInstance -Namespace 'root/SecurityCenter2' -ClassName AntiVirusProduct -ErrorAction Stop
+        if ($av) { $inv.antivirus = @($av | ForEach-Object { $_.displayName }) }
+    } catch { }
+    return $inv
 }
 
 function Import-IocData {
@@ -207,7 +276,10 @@ function Invoke-Update {
                      # common dev/app/backup/crypto files that would false-positive
                      '.swp','.swo','.swn','.lock','.key','.save','.old','.part','.partial','.download','.crdownload',
                      '.data','.dmp','.pem','.crt','.cer','.pub','.pfx','.p12','.asc','.gpg','.pgp','.kdbx','.jks',
-                     '.keystore','.vmdk','.vdi','.ova','.torrent','.cr2','.nef','.arw','.dng','.raw','.psd')) { [void]$denySet.Add($d) }
+                     '.keystore','.vmdk','.vdi','.ova','.torrent','.cr2','.nef','.arw','.dng','.raw','.psd',
+                     # too-common/legit extensions removed from the curated list - keep them out of
+                     # the community list too so they cannot re-false-positive via the entropy path
+                     '.inc','.java','.arrow','.abc','.rdm','.pb','.glb')) { [void]$denySet.Add($d) }
 
     $communityExt = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     $trustedOk = 0; $trustedFail = 0; $commSources = 0
@@ -406,6 +478,9 @@ function Invoke-Scan {
     Write-Host ('=' * 64) -ForegroundColor DarkCyan
 
     $isAdmin = Test-IsAdmin
+    $inv = Get-SystemInventory
+    Write-Info ("Device        : {0}  ({1} {2}, {3} GB RAM)  user {4}" -f `
+        $inv.hostname, ($(if ($inv.model) { $inv.model } else { $inv.os })), $inv.os_version, $inv.ram_gb, $inv.user)
     Write-Info "Mode          : $ModeLabel"
     Write-Info ("Administrator : {0}" -f ($(if ($isAdmin) {'Yes'} else {'No (some system folders may be skipped)'})))
     Write-Info "Report folder : $OutputDir"
@@ -609,16 +684,19 @@ function Invoke-Scan {
 
     # ---- reports ----
     $stamp = $started.ToString('yyyyMMdd_HHmmss')
-    $host_ = $env:COMPUTERNAME
+    $host_ = $inv.hostname
+    if (-not $host_) { $host_ = $env:COMPUTERNAME }
     if (-not $host_) { try { $host_ = [System.Net.Dns]::GetHostName() } catch { $host_ = 'host' } }
-    $baseName = "RansomwareScan_${host_}_${stamp}"
+    # Computer name FIRST -> reports from many devices identify by device at a glance.
+    $safeHost = ($host_ -replace '[^A-Za-z0-9._-]', '-'); if (-not $safeHost) { $safeHost = 'host' }
+    $baseName = "${safeHost}_RansomwareScan_${stamp}"
     $txtPath  = Join-Path $OutputDir "$baseName.txt"
     $jsonPath = Join-Path $OutputDir "$baseName.json"
     $htmlPath = Join-Path $OutputDir "$baseName.html"
 
     $meta = [ordered]@{
-        tool='Windows Ransomware Detection Toolkit'; version='3.2'; computer=$host_
-        user=$env:USERNAME; scanMode=$ModeLabel; targets=$Targets
+        tool='Windows Ransomware Detection Toolkit'; version='3.3'; computer=$host_
+        user=$env:USERNAME; scanMode=$ModeLabel; targets=$Targets; inventory=$inv
         startedAt=$started.ToString('s'); durationSec=[int]$elapsed.TotalSeconds
         filesScanned=$script:filesSeen; bytesScanned=$script:bytesSeen; verdict=$verdict
         counts=[ordered]@{ high=$high.Count; medium=$medium.Count; low=$low.Count }
@@ -637,6 +715,17 @@ function Invoke-Scan {
     [void]$txt.AppendLine(("Files      : {0:N0}  ({1:N1} GB) in {2:hh\:mm\:ss}" -f $script:filesSeen, ($script:bytesSeen/1GB), $elapsed))
     [void]$txt.AppendLine("VERDICT    : $verdict")
     [void]$txt.AppendLine(("Findings   : High={0}  Medium={1}  Low={2}" -f $high.Count, $medium.Count, $low.Count))
+    [void]$txt.AppendLine('')
+    [void]$txt.AppendLine('--- Device inventory ---')
+    [void]$txt.AppendLine(("  Hostname : {0}   FQDN: {1}" -f $inv.hostname, $inv.fqdn))
+    [void]$txt.AppendLine(("  OS       : {0} {1} ({2})" -f $inv.os, $inv.os_version, $inv.arch))
+    [void]$txt.AppendLine(("  Model    : {0}   Serial: {1}" -f $inv.model, $inv.serial))
+    [void]$txt.AppendLine(("  CPU/RAM  : {0} ({1} cores) / {2} GB" -f $inv.cpu, $inv.cpu_cores, $inv.ram_gb))
+    [void]$txt.AppendLine(("  User     : {0}   Domain: {1}" -f $inv.user, $inv.domain))
+    [void]$txt.AppendLine(("  Network  : {0}   MAC: {1}" -f (($inv.ips) -join ', '), $inv.mac))
+    if ($inv.antivirus) { [void]$txt.AppendLine(("  Antivirus: {0}" -f (($inv.antivirus) -join ', '))) }
+    [void]$txt.AppendLine(("  Disks    : {0}" -f (($inv.disks | ForEach-Object { "$($_.mount) $($_.free_gb)/$($_.total_gb)GB free" }) -join '  ')))
+    [void]$txt.AppendLine(("  Uptime   : {0}" -f $inv.uptime))
     [void]$txt.AppendLine('')
     if ($likely.Count) {
         [void]$txt.AppendLine('Likely family(ies) / decryptor:')
@@ -685,6 +774,27 @@ function Invoke-Scan {
         }
         $famHtml = "<div class='fam'><h3>Likely family &amp; decryptor (verify before trusting)</h3><ul>$($frows.ToString())</ul></div>"
     }
+    $disksStr = (($inv.disks | ForEach-Object { "$($_.mount) $($_.free_gb)/$($_.total_gb) GB free" }) -join '; ')
+    $invPairs = [ordered]@{
+        'Hostname'       = $inv.hostname
+        'FQDN'           = $(if ($inv.fqdn) { $inv.fqdn } else { '-' })
+        'OS'             = ("{0} {1} ({2})" -f $inv.os, $inv.os_version, $inv.arch)
+        'Model'          = $(if ($inv.model) { $inv.model } else { '-' })
+        'Serial'         = $(if ($inv.serial) { $inv.serial } else { '-' })
+        'CPU / RAM'      = ("{0} ({1} cores) / {2} GB" -f $inv.cpu, $inv.cpu_cores, $inv.ram_gb)
+        'User'           = $inv.user
+        'Domain'         = $(if ($inv.domain) { $inv.domain } else { '-' })
+        'Antivirus'      = $(if ($inv.antivirus) { ($inv.antivirus -join ', ') } else { '-' })
+        'IP address(es)' = $(if ($inv.ips) { ($inv.ips -join ', ') } else { '-' })
+        'MAC'            = $(if ($inv.mac) { $inv.mac } else { '-' })
+        'Disks'          = $(if ($disksStr) { $disksStr } else { '-' })
+        'Uptime'         = $(if ($inv.uptime) { $inv.uptime } else { '-' })
+    }
+    $invRows = New-Object System.Text.StringBuilder
+    foreach ($k in $invPairs.Keys) {
+        [void]$invRows.AppendLine(("<tr><td class='k'>{0}</td><td>{1}</td></tr>" -f (HtmlEncode $k), (HtmlEncode ([string]$invPairs[$k]))))
+    }
+    $invHtml = "<div class='inv'><h3>Device inventory</h3><table class='invtbl'>$($invRows.ToString())</table></div>"
     $html = @"
 <!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <title>Ransomware Scan - $host_ - $stamp</title>
@@ -707,6 +817,11 @@ function Invoke-Scan {
  .badge{padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700}
  .badge.high{background:#5a1e2e;color:#ff8ea0}.badge.medium{background:#5a4a1e;color:#ffdf9b}.badge.low{background:#2a3350;color:#9fb2df}
  tr.high td{background:rgba(90,30,46,.12)}
+ .inv{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:6px 18px 14px;margin:16px 0}
+ .inv h3{font-size:14px;color:var(--tx);margin:12px 0 8px}
+ .invtbl{width:100%;font-size:13px;background:transparent}
+ .invtbl td{border-bottom:1px solid var(--line);padding:6px 10px}
+ .invtbl td.k{color:var(--mut);width:170px;white-space:nowrap}
  .fam{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:6px 18px 14px;margin:16px 0}
  .fam h3{font-size:14px;color:var(--tx);margin:12px 0 6px}
  .fam ul{margin:0;padding-left:18px}.fam li{margin:8px 0;font-size:13px;line-height:1.5}
@@ -722,6 +837,7 @@ function Invoke-Scan {
    <div class="card"><div class="n" style="color:#9fb2df">$($low.Count)</div><div class="l">Low</div></div>
    <div class="card"><div class="n">$("{0:N0}" -f $script:filesSeen)</div><div class="l">Files</div></div>
  </div>
+ $invHtml
  $famHtml
  <table><thead><tr><th>Severity</th><th>Type</th><th>Path</th><th>Detail</th><th>Entropy</th><th>Modified</th></tr></thead>
  <tbody>

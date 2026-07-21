@@ -39,10 +39,15 @@ import math
 import json
 import time
 import html
+import uuid
+import shutil
 import fnmatch
 import socket
 import signal
+import getpass
+import platform
 import argparse
+import subprocess
 import webbrowser
 import urllib.request
 from collections import Counter
@@ -205,6 +210,156 @@ def hostname():
 def human_bytes(n):
     return n / (1024 ** 3)
 
+def _run(cmd, timeout=4):
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return (out.stdout or "").strip()
+    except Exception:
+        return ""
+
+def system_inventory():
+    """Best-effort machine inventory. Every field is guarded; gathering it must
+    never break a scan. Handy when the same scan is run across many devices."""
+    inv = {}
+    try: inv["hostname"] = socket.gethostname()
+    except Exception: inv["hostname"] = os.environ.get("COMPUTERNAME") or "unknown"
+    try:
+        fq = socket.getfqdn()
+        inv["fqdn"] = "" if (not fq or ".arpa" in fq or fq == inv["hostname"]) else fq
+    except Exception:
+        inv["fqdn"] = ""
+    inv["os"] = platform.system()
+    inv["os_release"] = platform.release()
+    inv["os_version"] = platform.version()
+    inv["platform"] = platform.platform()
+    inv["arch"] = platform.machine()
+    try: inv["user"] = getpass.getuser()
+    except Exception: inv["user"] = os.environ.get("USER") or os.environ.get("USERNAME") or "?"
+    inv["domain"] = os.environ.get("USERDOMAIN") or os.environ.get("USERDNSDOMAIN") or ""
+    inv["cpu_cores"] = os.cpu_count() or 0
+    inv["cpu"] = platform.processor() or ""
+    inv["scan_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # RAM (bytes)
+    ram = 0
+    try:
+        ram = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except Exception:
+        try:
+            import ctypes
+            class MS(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            m = MS(); m.dwLength = ctypes.sizeof(MS)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))  # type: ignore
+            ram = m.ullTotalPhys
+        except Exception:
+            ram = 0
+    inv["ram_gb"] = round(ram / (1024 ** 3), 1) if ram else 0
+
+    # Model / serial (best-effort, OS-specific)
+    inv["model"] = ""; inv["serial"] = ""
+    sysname = platform.system()
+    try:
+        if sysname == "Darwin":
+            hw = _run(["system_profiler", "SPHardwareDataType"])
+            for line in hw.splitlines():
+                s = line.strip()
+                if s.startswith("Model Name") or s.startswith("Model Identifier") and not inv["model"]:
+                    inv["model"] = s.split(":", 1)[1].strip()
+                if s.startswith("Serial Number"):
+                    inv["serial"] = s.split(":", 1)[1].strip()
+        elif sysname == "Linux":
+            for f, k in (("/sys/class/dmi/id/product_name", "model"),
+                         ("/sys/class/dmi/id/product_serial", "serial")):
+                try:
+                    with open(f) as fh:
+                        inv[k] = fh.read().strip()
+                except Exception:
+                    pass
+        elif sysname == "Windows":
+            inv["model"] = _run(["wmic", "computersystem", "get", "model"]).replace("Model", "").strip()
+            inv["serial"] = _run(["wmic", "bios", "get", "serialnumber"]).replace("SerialNumber", "").strip()
+    except Exception:
+        pass
+
+    # Disks (mount -> total/free GB), deduped by underlying device + size so
+    # Time Machine / APFS snapshots don't flood the list
+    disks = []
+    try:
+        seen_dev, seen_size = set(), set()
+        candidates = ["/"] if sysname != "Windows" else [f"{c}:\\" for c in "CDEFG"]
+        if sysname != "Windows":
+            for base in ("/Volumes", "/mnt", "/media"):
+                if os.path.isdir(base):
+                    for d in os.scandir(base):
+                        if d.is_dir(follow_symlinks=False) and "timemachine" not in d.name.lower():
+                            candidates.append(d.path)
+        for mp in candidates:
+            try:
+                if not os.path.exists(mp):
+                    continue
+                dev = os.stat(mp).st_dev
+                if dev in seen_dev:
+                    continue
+                seen_dev.add(dev)
+                du = shutil.disk_usage(mp)
+                key = (round(du.total / 1e9), round(du.free / 1e9))
+                if key in seen_size:
+                    continue
+                seen_size.add(key)
+                disks.append({"mount": mp, "total_gb": round(du.total / (1024 ** 3), 1),
+                              "free_gb": round(du.free / (1024 ** 3), 1)})
+            except Exception:
+                pass
+    except Exception:
+        pass
+    inv["disks"] = disks[:8]
+
+    # Network: IPs (drop loopback + link-local) + MAC
+    ips = []
+    try:
+        for ai in socket.getaddrinfo(socket.gethostname(), None):
+            ip = ai[4][0]
+            if (ip and ip not in ips and not ip.startswith("127.")
+                    and ip != "::1" and not ip.lower().startswith("fe80")):
+                ips.append(ip)
+    except Exception:
+        pass
+    try:
+        if not ips:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80)); ips.append(s.getsockname()[0]); s.close()
+    except Exception:
+        pass
+    inv["ips"] = ips
+    try:
+        mac = uuid.getnode()
+        inv["mac"] = ":".join(f"{(mac >> e) & 0xff:02x}" for e in range(40, -1, -8))
+    except Exception:
+        inv["mac"] = ""
+
+    # Uptime / boot (best-effort)
+    inv["uptime"] = ""
+    try:
+        if sysname == "Linux":
+            with open("/proc/uptime") as fh:
+                secs = float(fh.read().split()[0])
+                inv["uptime"] = f"{int(secs // 86400)}d {int((secs % 86400) // 3600)}h"
+        elif sysname == "Darwin":
+            bt = _run(["sysctl", "-n", "kern.boottime"])
+            m = re.search(r"sec\s*=\s*(\d+)", bt)
+            if m:
+                secs = time.time() - int(m.group(1))
+                inv["uptime"] = f"{int(secs // 86400)}d {int((secs % 86400) // 3600)}h"
+    except Exception:
+        pass
+
+    return inv
+
 def iter_home_dirs():
     roots = []
     for base in ("/home", "/Users", "/root"):
@@ -268,6 +423,9 @@ def run_scan(cfg, targets, mode_label):
     print(_c("36", "  Ransomware SCAN  -  read-only, results saved next to this tool"))
     print(_c("36", "=" * 64))
     is_root = (hasattr(os, "geteuid") and os.geteuid() == 0)
+    inv = system_inventory()
+    info(f"Device        : {inv['hostname']}  ({inv.get('model') or inv['os']} {inv['os_release']}, "
+         f"{inv.get('ram_gb','?')} GB RAM)  user {inv['user']}")
     info(f"Mode          : {mode_label}")
     info("Privilege     : " + ("root" if is_root else "normal user (some system files may be skipped)"))
     info(f"Report folder : {cfg['output_dir']}")
@@ -451,7 +609,7 @@ def run_scan(cfg, targets, mode_label):
         print(_c("90", "   (menu [7] opens ID Ransomware / No More Ransom to confirm)"))
 
     paths = write_reports(cfg, mode_label, targets, started, elapsed,
-                          files_seen, bytes_seen, findings, high, medium, low, verdict, likely)
+                          files_seen, bytes_seen, findings, high, medium, low, verdict, likely, inv)
     print()
     ok("Reports saved:")
     print(_c("36", "     " + paths["html"]))
@@ -490,11 +648,16 @@ def likely_families(findings, fam_db):
 # Reports
 # ---------------------------------------------------------------------------
 def write_reports(cfg, mode_label, targets, started, elapsed, files_seen, bytes_seen,
-                  findings, high, medium, low, verdict, likely):
+                  findings, high, medium, low, verdict, likely, inv=None):
+    if inv is None:
+        inv = system_inventory()
     stamp = datetime.fromtimestamp(started).strftime("%Y%m%d_%H%M%S")
-    host = hostname()
-    user = os.environ.get("USER") or os.environ.get("USERNAME") or "user"
-    base = f"RansomwareScan_{host}_{stamp}"
+    host = inv.get("hostname") or hostname()
+    user = inv.get("user") or os.environ.get("USER") or os.environ.get("USERNAME") or "user"
+    # Computer name FIRST in the file name -> reports from 50-60 devices sort and
+    # identify by device at a glance.
+    safe_host = re.sub(r"[^A-Za-z0-9._-]", "-", host) or "host"
+    base = f"{safe_host}_RansomwareScan_{stamp}"
     txt_path  = os.path.join(cfg["output_dir"], base + ".txt")
     json_path = os.path.join(cfg["output_dir"], base + ".json")
     html_path = os.path.join(cfg["output_dir"], base + ".html")
@@ -505,6 +668,7 @@ def write_reports(cfg, mode_label, targets, started, elapsed, files_seen, bytes_
     meta = {
         "tool": "Windows Ransomware Detection Toolkit", "version": VERSION, "platform": "linux/python",
         "computer": host, "user": user, "scanMode": mode_label, "targets": targets,
+        "inventory": inv,
         "startedAt": datetime.fromtimestamp(started).isoformat(timespec="seconds"),
         "durationSec": int(elapsed), "filesScanned": files_seen, "bytesScanned": bytes_seen,
         "verdict": verdict, "counts": {"high": len(high), "medium": len(medium), "low": len(low)},
@@ -525,6 +689,17 @@ def write_reports(cfg, mode_label, targets, started, elapsed, files_seen, bytes_
     lines.append(f"Files      : {files_seen:,}  ({human_bytes(bytes_seen):.1f} GB) in {_fmt_dur(elapsed)}")
     lines.append(f"VERDICT    : {verdict}")
     lines.append(f"Findings   : High={len(high)}  Medium={len(medium)}  Low={len(low)}")
+    lines.append("")
+    lines.append("--- Device inventory ---")
+    lines.append(f"  Hostname : {inv.get('hostname','')}   FQDN: {inv.get('fqdn','')}")
+    lines.append(f"  OS       : {inv.get('platform','')} ({inv.get('arch','')})")
+    lines.append(f"  Model    : {inv.get('model','') or '-'}   Serial: {inv.get('serial','') or '-'}")
+    lines.append(f"  CPU/RAM  : {inv.get('cpu_cores','?')} cores / {inv.get('ram_gb','?')} GB")
+    lines.append(f"  User     : {inv.get('user','')}   Domain: {inv.get('domain','') or '-'}")
+    lines.append(f"  Network  : {', '.join(inv.get('ips', [])) or '-'}   MAC: {inv.get('mac','') or '-'}")
+    _disks = "  ".join(f"{d['mount']} {d['free_gb']}/{d['total_gb']}GB free" for d in inv.get("disks", []))
+    lines.append(f"  Disks    : {_disks or '-'}")
+    lines.append(f"  Uptime   : {inv.get('uptime','') or '-'}")
     lines.append("")
     if likely:
         lines.append("Likely family(ies) / decryptor:")
@@ -568,6 +743,19 @@ def write_reports(cfg, mode_label, targets, started, elapsed, files_seen, bytes_
                       f"<span class='mut'>{html.escape(fam.get('tool',''))}</span> &middot; "
                       f"<a href='{html.escape(fam.get('url',''))}'>{html.escape(fam.get('url',''))}</a></li>")
         fam_html = "<div class='fam'><h3>Likely family &amp; decryptor (verify before trusting)</h3><ul>" + "".join(li) + "</ul></div>"
+    disks_str = "; ".join(f"{d['mount']} {d['free_gb']}/{d['total_gb']} GB free" for d in inv.get("disks", [])) or "-"
+    inv_rows = [
+        ("Hostname", inv.get("hostname", "")), ("FQDN", inv.get("fqdn", "") or "-"),
+        ("OS", f"{inv.get('platform','')} ({inv.get('arch','')})"),
+        ("Model", inv.get("model", "") or "-"), ("Serial", inv.get("serial", "") or "-"),
+        ("CPU / RAM", f"{inv.get('cpu_cores','?')} cores / {inv.get('ram_gb','?')} GB"),
+        ("User", inv.get("user", "")), ("Domain", inv.get("domain", "") or "-"),
+        ("IP address(es)", ", ".join(inv.get("ips", [])) or "-"), ("MAC", inv.get("mac", "") or "-"),
+        ("Disks", disks_str), ("Uptime", inv.get("uptime", "") or "-"),
+    ]
+    inv_html = ("<div class='inv'><h3>Device inventory</h3><table class='invtbl'>"
+                + "".join(f"<tr><td class='k'>{html.escape(k)}</td><td>{html.escape(str(v))}</td></tr>" for k, v in inv_rows)
+                + "</table></div>")
     vclass = "high" if high else ("medium" if medium else "clean")
     started_str = datetime.fromtimestamp(started).strftime("%Y-%m-%d %H:%M:%S")
     doc = (HTML_HEAD.replace("__TITLE__", f"Ransomware Scan - {html.escape(host)} - {stamp}")
@@ -580,6 +768,7 @@ def write_reports(cfg, mode_label, targets, started, elapsed, files_seen, bytes_
            + f"<div class='card'><div class='n' style='color:#ffcf6b'>{len(medium)}</div><div class='l'>Medium</div></div>"
            + f"<div class='card'><div class='n' style='color:#9fb2df'>{len(low)}</div><div class='l'>Low</div></div>"
            + f"<div class='card'><div class='n'>{files_seen:,}</div><div class='l'>Files</div></div></div>"
+           + inv_html
            + fam_html
            + "<table><thead><tr><th>Severity</th><th>Type</th><th>Path</th><th>Detail</th><th>Entropy</th><th>Modified</th></tr></thead><tbody>"
            + "".join(rows)
@@ -613,6 +802,11 @@ HTML_HEAD = """<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
  .badge{padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700}
  .badge.high{background:#5a1e2e;color:#ff8ea0}.badge.medium{background:#5a4a1e;color:#ffdf9b}.badge.low{background:#2a3350;color:#9fb2df}
  tr.high td{background:rgba(90,30,46,.12)}
+ .inv{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:6px 18px 14px;margin:16px 0}
+ .inv h3{font-size:14px;color:var(--tx);margin:12px 0 8px}
+ .invtbl{width:100%;font-size:13px;background:transparent}
+ .invtbl td{border-bottom:1px solid var(--line);padding:6px 10px}
+ .invtbl td.k{color:var(--mut);width:170px;white-space:nowrap}
  .fam{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:6px 18px 14px;margin:16px 0}
  .fam h3{font-size:14px;color:var(--tx);margin:12px 0 6px}
  .fam ul{margin:0;padding-left:18px}.fam li{margin:8px 0;font-size:13px;line-height:1.5}
@@ -785,7 +979,10 @@ DENY_EXT = set(x.lower() for x in [
     ".db", ".sqlite", ".swp", ".swo", ".swn", ".lock", ".key", ".save", ".old", ".part", ".partial", ".download",
     ".crdownload", ".data", ".dmp", ".pem", ".crt", ".cer", ".pub", ".pfx", ".p12", ".asc", ".gpg", ".pgp",
     ".kdbx", ".jks", ".keystore", ".vmdk", ".vdi", ".ova", ".torrent", ".cr2", ".nef", ".arw", ".dng", ".raw",
-    ".psd", ".so", ".o", ".a", ".ko", ".py", ".c", ".h", ".sh", ".rb", ".go", ".rs", ".php"])
+    ".psd", ".so", ".o", ".a", ".ko", ".py", ".c", ".h", ".sh", ".rb", ".go", ".rs", ".php",
+    # too-common / legit extensions removed from the curated list - keep them out of
+    # the community list too so they can't re-false-positive via the entropy path
+    ".inc", ".java", ".arrow", ".abc", ".rdm", ".pb", ".glb"])
 
 def clean_extension(line):
     l = line.strip()
@@ -1017,6 +1214,26 @@ def main():
     ap.add_argument("--open-report", action="store_true", dest="open_report")
     ap.add_argument("--data-dir", dest="data_dir")
     ap.add_argument("--output-dir", dest="output_dir")
+    ap.add_argument("--config", dest="config", help="path to a JSON config file (default: toolkit.config.json next to the script, if present)")
+
+    # OPTIONAL config file: if toolkit.config.json exists (or --config given), its
+    # values become the defaults. Command-line flags still override it. Not required.
+    known = {"recent_hours", "mass_threshold", "no_entropy", "max_mb", "entropy_threshold",
+             "burst_threshold", "burst_window", "open_report", "data_dir", "output_dir"}
+    cfg_path = None
+    _pre, _ = ap.parse_known_args()
+    if _pre.config and os.path.isfile(_pre.config):
+        cfg_path = _pre.config
+    elif os.path.isfile(os.path.join(SCRIPT_DIR, "toolkit.config.json")):
+        cfg_path = os.path.join(SCRIPT_DIR, "toolkit.config.json")
+    if cfg_path:
+        try:
+            with open(cfg_path, encoding="utf-8") as f:
+                overrides = {k: v for k, v in json.load(f).items() if k in known}
+            ap.set_defaults(**overrides)
+        except Exception as e:
+            warn(f"Could not read config {cfg_path}: {e}")
+
     a = ap.parse_args()
     try:
         sys.stdout.reconfigure(line_buffering=True)   # live output even when piped

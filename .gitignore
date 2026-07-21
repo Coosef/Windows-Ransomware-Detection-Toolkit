@@ -5,6 +5,9 @@ reports/*
 # Backups created by "Update definitions"
 data/*.bak
 
+# Local/active config (keep the .example template in the repo)
+toolkit.config.json
+
 # Python bytecode cache
 __pycache__/
 *.pyc

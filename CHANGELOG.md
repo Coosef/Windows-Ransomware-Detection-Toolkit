@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.4 — Fleet features (inventory, device-first reports, config, CI)
+
+Aimed at running the same scan across many (50-60) machines.
+
+- **Device inventory in every report** — hostname, FQDN, OS, model, serial,
+  CPU/RAM, user, domain, IPs, MAC, disks (free/total), uptime, and (Windows)
+  installed antivirus. Shown in the console header and embedded in the TXT, JSON
+  and HTML reports so you can tell whose machine it is at a glance.
+- **Report file name now starts with the computer name** —
+  `<HOSTNAME>_RansomwareScan_<timestamp>.{txt,json,html}` — so reports from a
+  fleet sort and identify by device.
+- **Optional config file** (`toolkit.config.json`) — set thresholds once and drop
+  the same file on every USB. Command-line flags still override it; if the file is
+  absent the toolkit works out of the box. See `toolkit.config.example.json`.
+- **GitHub Actions CI** — every push parse-checks both engines and runs a synthetic
+  attack fixture (must be detected) + a clean fixture (must stay clean), protecting
+  the precision work in 3.3.
+
 ## 3.3 — Precision hardening (real-world false-positive fixes)
 
 A real Quick scan of a developer machine (361k files) produced ~5000 false
