@@ -195,11 +195,14 @@ def load_families(data_dir):
         return res
     res["urls"] = j.get("identifyUrls", IDENTIFY_URLS_DEFAULT)
     res["families"] = j.get("families", [])
+    res["markers"] = []   # (marker_lower, family) - matched against confirmed note text
     for fam in res["families"]:
         for e in fam.get("extensions", []):
             res["by_ext"][e.lower()] = fam
         for n in fam.get("notes", []):
             res["by_note"][n.lower()] = fam
+        for mk in fam.get("noteMarkers", []):
+            res["markers"].append((mk.lower(), fam))
     return res
 
 def _read_lines(path):
@@ -479,6 +482,7 @@ def run_scan(cfg, targets, mode_label):
     findings = []
     dir_stats = {}      # dir -> {"total":int,"recent":int,"ext":Counter}
     note_spread = {}    # note-name -> set(dirs)
+    note_fam = {}       # family-name -> family, detected from note CONTENT
     files_seen = 0
     bytes_seen = 0
     last_tick = time.time()
@@ -564,8 +568,14 @@ def run_scan(cfg, targets, mode_label):
                 kw_hits = [k for k in ioc["keywords"] if k in content]
                 strong = [k for k in kw_hits if k in STRONG_KEYWORDS]
                 if note_hit and kw_hits:
+                    # family from the note text + a short preview
+                    for mk, fam in fam_db.get("markers", []):
+                        if mk in content and fam["name"] not in note_fam:
+                            note_fam[fam["name"]] = fam
+                    preview = " ".join(content.split())[:160]
                     findings.append(_finding("High", "RansomNote", path,
-                        "Ransom note (name + content). Keywords: " + ", ".join(kw_hits[:4]), mtime=st.st_mtime))
+                        "Ransom note (name + content). Keywords: " + ", ".join(kw_hits[:4])
+                        + (f"  | note: {preview}" if preview else ""), mtime=st.st_mtime))
                     note_spread.setdefault(name.lower(), set()).add(d)   # only confirmed notes count for spread
                 elif note_hit:
                     findings.append(_finding("Medium", "RansomNote", path,
@@ -661,6 +671,11 @@ def run_scan(cfg, targets, mode_label):
         bad(f"... and {len(high) - 15} more high-severity findings (see report)")
 
     likely = likely_families(findings, fam_db)
+    _seen_fam = {f["name"] for f in likely}
+    for nm, fam in note_fam.items():   # families identified from ransom-note text
+        if nm not in _seen_fam:
+            likely.append(fam)
+            _seen_fam.add(nm)
     if likely:
         print()
         print(_c("36", "  Likely ransomware family(ies):"))
@@ -899,6 +914,51 @@ def run_fleet(cfg, folder=None):
         try: webbrowser.open("file://" + base + ".html")
         except Exception: pass
     return 2 if infected else (1 if suspicious else 0)
+
+def run_selftest(cfg):
+    """Built-in health check: build a synthetic attack + a clean control, run the
+    scanner on both, and confirm it detects the attack and leaves the clean
+    folder clean. Nothing on your real system is touched."""
+    import tempfile, shutil as sh, io, contextlib
+    print()
+    print(_c("36", "  Self-test - verify detection works here (a temp fixture, no real changes)"))
+    tmp = tempfile.mkdtemp(prefix="rwt_selftest_")
+    tcfg = dict(cfg)
+    tcfg.update({"output_dir": os.path.join(tmp, "out"), "mass_threshold": 15,
+                 "notify_webhook": None, "notify_telegram_token": None, "syslog": None, "contain": []})
+    passed = True
+    try:
+        atk, cln = os.path.join(tmp, "attack"), os.path.join(tmp, "clean")
+        os.makedirs(os.path.join(atk, "mass")); os.makedirs(cln)
+        with open(os.path.join(atk, "a.docx.lockbit"), "w") as f:
+            f.write("x")
+        with open(os.path.join(atk, "HOW TO DECRYPT FILES.txt"), "w") as f:
+            f.write("YOUR FILES HAVE BEEN ENCRYPTED. all your files are encrypted. bitcoin .onion decrypt your files")
+        for i in range(20):
+            with open(os.path.join(atk, "mass", f"f{i}.crypted"), "wb") as f:
+                f.write(os.urandom(3000))
+        with open(os.path.join(cln, "reference.txt"), "w") as f:
+            f.write("just some reference notes about the project")
+        with open(os.path.join(cln, "app.lock"), "wb") as f:
+            f.write(os.urandom(40000))
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc_atk = run_scan(tcfg, [atk], "Selftest")
+            rc_cln = run_scan(tcfg, [cln], "Selftest")
+        ok_atk, ok_cln = (rc_atk == 2), (rc_cln == 0)
+        print(("  " + _c("32", "[PASS]") if ok_atk else "  " + _c("31", "[FAIL]")) + " detects a synthetic ransomware attack")
+        print(("  " + _c("32", "[PASS]") if ok_cln else "  " + _c("31", "[FAIL]")) + " leaves a clean folder clean (no false positives)")
+        passed = ok_atk and ok_cln
+    except Exception as e:
+        bad(f"Self-test error: {e}")
+        passed = False
+    finally:
+        sh.rmtree(tmp, ignore_errors=True)
+    print()
+    if passed:
+        ok("Self-test PASSED - the toolkit is detecting correctly in this environment.")
+    else:
+        bad("Self-test FAILED - the toolkit did not behave as expected (see above).")
+    return 0 if passed else 1
 
 def sha256_file(path, cap=64 * 1024 * 1024):
     import hashlib
@@ -1608,6 +1668,7 @@ def show_menu(cfg):
         print("   [8]  Baseline snapshot     record a folder's state to compare later")
         print("   [9]  Diff vs baseline      show what changed since the snapshot")
         print("   [f]  Fleet dashboard       combine many devices' reports into one view")
+        print("   [t]  Self-test             verify detection works in this environment")
         print("   [0]  Exit")
         print()
         try:
@@ -1643,6 +1704,8 @@ def show_menu(cfg):
         elif choice.lower() == "f":
             t = input("   Reports folder (blank = this tool's reports/): ").strip()
             run_fleet(cfg, t or None); _pause()
+        elif choice.lower() == "t":
+            run_selftest(cfg); _pause()
         elif choice == "0":
             return
 
@@ -1685,7 +1748,7 @@ def build_cfg(a):
 
 def main():
     ap = argparse.ArgumentParser(description="Windows Ransomware Detection Toolkit - Linux/Python edition")
-    ap.add_argument("--mode", choices=["menu", "quick", "full", "custom", "watch", "update", "baseline", "diff", "fleet"], default="menu")
+    ap.add_argument("--mode", choices=["menu", "quick", "full", "custom", "watch", "update", "baseline", "diff", "fleet", "selftest"], default="menu")
     ap.add_argument("--path", nargs="+", help="paths to scan (custom) or watch")
     ap.add_argument("--recent-hours", type=int, default=24, dest="recent_hours")
     ap.add_argument("--mass-threshold", type=int, default=40, dest="mass_threshold")
@@ -1752,6 +1815,8 @@ def main():
         sys.exit(run_diff(cfg, resolve_targets("custom", a.path) or resolve_targets("quick", None)))
     elif mode == "fleet":
         sys.exit(run_fleet(cfg, a.path[0] if a.path else None))
+    elif mode == "selftest":
+        sys.exit(run_selftest(cfg))
 
 if __name__ == "__main__":
     main()

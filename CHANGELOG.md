@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.9 — Self-test & ransom-note family identification
+
+- **Self-test** (`--mode selftest` / menu `T`) — builds a synthetic attack and a
+  clean control in a temp folder, runs the scanner on both, and confirms it
+  detects the attack and leaves the clean folder clean. A one-command "is it
+  actually working here?" check. Nothing on the real system is touched.
+- **Family from ransom-note text** — the likely family is now also identified from
+  the ransom note's CONTENT (e.g. a note mentioning "LockBit"), not just the file
+  extension - so a device with only a ransom note still gets an attribution. The
+  report now includes a short preview of the note.
+
 ## 3.8 — CSV export, syslog & scheduled scans
 
 - **CSV export** — every scan now also writes a `.csv` of its findings

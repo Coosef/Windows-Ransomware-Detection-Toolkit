@@ -137,6 +137,15 @@ başına en son rapor gösterilir.
 o dosyalar taramada atlanır (AV istisnaları gibi) — ortamına özel meşru bir uygulamayı
 susturmak için.
 
+### 🧪 Self-test
+`--mode selftest` (menüde `T`) aracın **bu ortamda gerçekten tespit edip etmediğini**
+doğrular: geçici bir klasörde sentetik bir saldırı + temiz kontrol üretir, ikisini de
+tarar, saldırıyı yakaladığını ve temizi temiz bıraktığını gösterir. Sisteminde hiçbir
+şeye dokunmaz.
+
+> Muhtemel aile artık sadece uzantıdan değil, **fidye notunun içeriğinden** de
+> tanınır (ör. notta "LockBit" geçiyorsa) ve rapora notun kısa bir önizlemesi eklenir.
+
 ## 🧩 Ek tespit katmanları
 
 - **Baseline / diff** (menü `8` / `9`): Bir klasörün anlık durumunu kaydet

@@ -43,7 +43,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Menu','Quick','Full','Custom','Watch','Update','Baseline','Diff','Fleet')]
+    [ValidateSet('Menu','Quick','Full','Custom','Watch','Update','Baseline','Diff','Fleet','Selftest')]
     [string]$Mode = 'Menu',
     [string[]]$Path,
 
@@ -281,7 +281,7 @@ function Import-IocData {
 # --- Family / decryptor map (data/families.json) ---------------------------
 function Import-Families {
     param([string]$Dir)
-    $result = [pscustomobject]@{ ByExt=@{}; ByNote=@{}; Families=@(); Urls=$null }
+    $result = [pscustomobject]@{ ByExt=@{}; ByNote=@{}; Families=@(); Urls=$null; Markers=(New-Object System.Collections.ArrayList) }
     $path = Join-Path $Dir 'families.json'
     if (-not (Test-Path $path)) { return $result }
     try { $json = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json } catch { return $result }
@@ -290,6 +290,7 @@ function Import-Families {
     foreach ($fam in $json.families) {
         if ($fam.extensions) { foreach ($e in $fam.extensions) { $result.ByExt[$e.ToLowerInvariant()] = $fam } }
         if ($fam.notes)      { foreach ($n in $fam.notes)      { $result.ByNote[$n.ToLowerInvariant()] = $fam } }
+        if ($fam.noteMarkers){ foreach ($mk in $fam.noteMarkers) { [void]$result.Markers.Add([pscustomobject]@{ marker=$mk.ToLowerInvariant(); fam=$fam }) } }
     }
     return $result
 }
@@ -646,6 +647,9 @@ function Invoke-Scan {
     $script:Allow = Import-Allowlist -Dir $DataDir     # optional exclusions
     $allowN = $script:Allow.Prefixes.Count + $script:Allow.Exts.Count + $script:Allow.Names.Count
     if ($allowN) { Write-Info ("Allowlist     : {0} exclusion rule(s) loaded" -f $allowN) }
+    $famDb = Import-Families -Dir $DataDir             # loaded early for note-content family ID
+    $script:FamMarkers = $famDb.Markers
+    $script:noteFam = @{}                              # family-name -> family, from note CONTENT
     Write-Info ("Targets       : {0}" -f ($Targets -join ' ; '))
     Write-Host ""
 
@@ -741,8 +745,12 @@ function Invoke-Scan {
                     } catch { }
                     $strong = @($kwHits | Where-Object { $script:StrongKeywords.Contains($_) })
                     if ($noteHit -and $kwHits.Count -ge 1) {
+                        foreach ($mk in $script:FamMarkers) {   # family from the note text
+                            if ($cl.Contains($mk.marker) -and -not $script:noteFam.ContainsKey($mk.fam.name)) { $script:noteFam[$mk.fam.name] = $mk.fam }
+                        }
+                        $preview = ($cl -replace '\s+', ' ').Trim(); if ($preview.Length -gt 160) { $preview = $preview.Substring(0, 160) }
                         Add-Finding -Severity 'High' -Type 'RansomNote' -FilePath $file.FullName `
-                            -Detail ("Ransom note (name + content). Keywords: " + (($kwHits | Select-Object -First 4) -join ', ')) `
+                            -Detail ("Ransom note (name + content). Keywords: " + (($kwHits | Select-Object -First 4) -join ', ') + $(if ($preview) { "  | note: $preview" } else { '' })) `
                             -Modified $file.LastWriteTime
                         $nl = $name.ToLowerInvariant()   # only confirmed notes count toward spread
                         if (-not $noteSpread.ContainsKey($nl)) { $noteSpread[$nl] = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase) }
@@ -860,9 +868,13 @@ function Invoke-Scan {
     if ($high.Count -gt 15) { Write-Bad ("... and {0} more high-severity findings (see report)" -f ($high.Count - 15)) }
 
     # ---- likely family + decryptor hints ----
-    $famDb  = Import-Families -Dir $DataDir
     $likely = @()
-    if ($famDb.Families.Count) { $likely = Get-LikelyFamilies -Findings $findings -Fam $famDb }
+    if ($famDb.Families.Count) { $likely = @(Get-LikelyFamilies -Findings $findings -Fam $famDb) }
+    $seenFam = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($lf in $likely) { [void]$seenFam.Add($lf.name) }
+    foreach ($k in $script:noteFam.Keys) {   # families identified from ransom-note text
+        if ($seenFam.Add($k)) { $likely += $script:noteFam[$k] }
+    }
     if ($likely.Count) {
         Write-Host ""
         Write-Host "  Likely ransomware family(ies):" -ForegroundColor Cyan
@@ -1453,6 +1465,48 @@ $($tr.ToString())
 }
 
 # ===========================================================================
+# Self-test  (verify detection works in this environment)
+# ===========================================================================
+function Invoke-Selftest {
+    Write-Host ""
+    Write-Host "  Self-test - verify detection works here (a temp fixture, no real changes)" -ForegroundColor Cyan
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("rwt_selftest_" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    $atk = Join-Path $tmp 'attack'; $cln = Join-Path $tmp 'clean'
+    New-Item -ItemType Directory -Path (Join-Path $atk 'mass') -Force | Out-Null
+    New-Item -ItemType Directory -Path $cln -Force | Out-Null
+    $savedOut = $OutputDir
+    $passed = $true
+    try {
+        Set-Content -LiteralPath (Join-Path $atk 'a.docx.lockbit') -Value 'x'
+        Set-Content -LiteralPath (Join-Path $atk 'HOW TO DECRYPT FILES.txt') -Value 'YOUR FILES HAVE BEEN ENCRYPTED. all your files are encrypted. bitcoin .onion decrypt your files'
+        $rand = [System.Random]::new()
+        $buf = New-Object byte[] 3000
+        for ($i = 0; $i -lt 20; $i++) { $rand.NextBytes($buf); [System.IO.File]::WriteAllBytes((Join-Path $atk "mass\f$i.crypted"), $buf) }
+        Set-Content -LiteralPath (Join-Path $cln 'reference.txt') -Value 'just some reference notes about the project'
+        $big = New-Object byte[] 40000; $rand.NextBytes($big); [System.IO.File]::WriteAllBytes((Join-Path $cln 'app.lock'), $big)
+
+        Set-Variable -Name OutputDir -Value (Join-Path $tmp 'out') -Scope Script
+        $rcAtk = (Invoke-Scan -Targets @($atk) -ModeLabel 'Selftest' 6>$null | Select-Object -Last 1)
+        $rcCln = (Invoke-Scan -Targets @($cln) -ModeLabel 'Selftest' 6>$null | Select-Object -Last 1)
+        $okAtk = ($rcAtk -eq 2); $okCln = ($rcCln -eq 0)
+        if ($okAtk) { Write-Host "  [PASS]" -ForegroundColor Green -NoNewline } else { Write-Host "  [FAIL]" -ForegroundColor Red -NoNewline }
+        Write-Host " detects a synthetic ransomware attack"
+        if ($okCln) { Write-Host "  [PASS]" -ForegroundColor Green -NoNewline } else { Write-Host "  [FAIL]" -ForegroundColor Red -NoNewline }
+        Write-Host " leaves a clean folder clean (no false positives)"
+        $passed = $okAtk -and $okCln
+    }
+    catch { Write-Bad "Self-test error: $($_.Exception.Message)"; $passed = $false }
+    finally {
+        Set-Variable -Name OutputDir -Value $savedOut -Scope Script
+        Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host ""
+    if ($passed) { Write-Ok "Self-test PASSED - the toolkit is detecting correctly in this environment." }
+    else { Write-Bad "Self-test FAILED - the toolkit did not behave as expected (see above)." }
+    return $(if ($passed) { 0 } else { 1 })
+}
+
+# ===========================================================================
 # Interactive menu
 # ===========================================================================
 function Show-Menu {
@@ -1473,6 +1527,7 @@ function Show-Menu {
         Write-Host "   [8]  Baseline snapshot     record a folder's state to compare later"
         Write-Host "   [9]  Diff vs baseline      show what changed since the snapshot"
         Write-Host "   [F]  Fleet dashboard       combine many devices' reports into one view"
+        Write-Host "   [T]  Self-test             verify detection works in this environment"
         Write-Host "   [0]  Exit"
         Write-Host ""
         $choice = Read-Host "   Select an option"
@@ -1501,6 +1556,10 @@ function Show-Menu {
             { $_ -eq 'F' -or $_ -eq 'f' } {
                 $t = Read-Host "   Reports folder (blank = this tool's reports)"
                 [void](Invoke-Fleet -Folder ($(if ($t) { $t } else { $null })))
+                [void](Read-Host "`n   Press Enter to return to the menu")
+            }
+            { $_ -eq 'T' -or $_ -eq 't' } {
+                [void](Invoke-Selftest)
                 [void](Read-Host "`n   Press Enter to return to the menu")
             }
             '0' { return }
@@ -1541,4 +1600,5 @@ switch ($Mode) {
     'Baseline' { exit (Invoke-Baseline -Targets ($(if ($Path) { Resolve-Targets -Path $Path } else { Resolve-Targets }))) }
     'Diff'     { exit (Invoke-Diff     -Targets ($(if ($Path) { Resolve-Targets -Path $Path } else { Resolve-Targets }))) }
     'Fleet'    { exit (Invoke-Fleet -Folder ($(if ($Path) { $Path[0] } else { $null }))) }
+    'Selftest' { exit (Invoke-Selftest) }
 }
